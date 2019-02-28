@@ -38,7 +38,7 @@ On a Linux system you can build and install Boomerang with the usual cmake-make-
 On a Debian-compatible system (e.g. Ubuntu) these commands will clone, build and install Boomerang:
 
 ```bash
-sudo apt-get install git build-essential cmake qt5-default libcapstone-dev flex bison
+sudo apt-get install git build-essential cmake qt5-default libcapstone-dev flex bison doxygen
 cd YOUR_FAVOURITE_DEVELOPMENT_DIRECTORY
 git clone https://github.com/BoomerangDecompiler/boomerang.git
 cd boomerang && mkdir build && cd build
