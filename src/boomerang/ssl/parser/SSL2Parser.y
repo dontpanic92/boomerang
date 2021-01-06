@@ -7,13 +7,14 @@
  */
 
 %skeleton "lalr1.cc" /* -*- C++ -*- */
-%require "3.0"
+%require "3.3"
+
 %defines
 %define api.token.constructor
 %define api.value.type variant
 %define parse.assert
 %define api.namespace {::SSL2}
-%name-prefix "SSL2"
+%define api.prefix {SSL2}
 
 %code requires {
 
@@ -40,6 +41,10 @@ class SSL2ParserDriver;
 #include "boomerang/ssl/RTLInstDict.h"
 #include "SSL2ParserDriver.h"
 #include "boomerang/ssl/exp/Terminal.h"
+#include "boomerang/ssl/statements/BranchStatement.h"
+#include "boomerang/ssl/statements/CallStatement.h"
+#include "boomerang/ssl/statements/GotoStatement.h"
+#include "boomerang/ssl/statements/ReturnStatement.h"
 #include "boomerang/ssl/type/SizeType.h"
 #include "boomerang/ssl/type/FloatType.h"
 #include "boomerang/ssl/type/IntegerType.h"
@@ -60,10 +65,11 @@ extern SharedExp listExpToExp(std::list<SharedExp>* le);   // Convert a STL list
 %token KW_ENDIANNESS KW_BIG KW_LITTLE
 %token KW_COVERS KW_SHARES
 %token KW_FPUSH KW_FPOP
-%token KW_FLOAT KW_INTEGER KW_FLAGS
+%token KW_FLOAT KW_INTEGER KW_FLAGS KW_INSTRUCTION
+%token KW_RET KW_GOTO KW_CALL
 
 // identifiers
-%token <QString> IDENT REG_IDENT TEMP
+%token <QString> IDENT REG_IDENT TEMP STR_LITERAL
 %token <int>     INT_LITERAL
 %token <double>  FLOAT_LITERAL
 
@@ -84,7 +90,7 @@ extern SharedExp listExpToExp(std::list<SharedExp>* le);   // Convert a STL list
 // other tokens
 %token MEMOF REGOF
 %token <int> REG_NUM
-%token THEN INDEX ASSIGN TO DOT COLON AT UNDERSCORE QUESTION COMMA SEMICOLON DOLLAR QUOTE DQUOTE
+%token THEN INDEX ASSIGN TO DOT COLON AT UNDERSCORE QUESTION COMMA SEMICOLON DOLLAR QUOTE
 %token LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE
 %token <QString> ASSIGNTYPE
 
@@ -104,13 +110,12 @@ extern SharedExp listExpToExp(std::list<SharedExp>* le);   // Convert a STL list
 %right NOT LNOT
 %nonassoc AT
 
-%type <SharedExp>    exp location exp_term
-%type <Statement *>  statement
-%type <Assign *>     assignment
-%type <SharedType>   assigntype
-%type <SharedRTL>    rtl nonempty_rtl rtl_part
-%type <QString>      str
-%type <std::shared_ptr<Table>> table_expr
+%type <SharedExp>               exp location exp_term
+%type <SharedStmt>              statement ret_stmt goto_stmt call_stmt
+%type <std::shared_ptr<Assign>> assignment
+%type <SharedType>              assigntype
+%type <SharedRTL>               rtl nonempty_rtl rtl_part
+%type <std::shared_ptr<Table>>  table_expr
 %type <std::shared_ptr<InsNameElem>> instr_name instr_name_elem
 %type <std::shared_ptr<std::deque<QString>>> str_list strtable_expr str_array
 %type <std::shared_ptr<std::list<QString>>> paramlist nonempty_paramlist
@@ -120,8 +125,8 @@ extern SharedExp listExpToExp(std::list<SharedExp>* le);   // Convert a STL list
 %printer { yyoutput << $$; } <*>;
 %printer { yyoutput << $$.toStdString(); } <QString>;
 %printer { yyoutput << $$->toString().toStdString(); } <SharedExp>;
-%printer { yyoutput << $$->toString().toStdString(); } <Statement *>;
-%printer { yyoutput << $$->toString().toStdString(); } <Assign *>;
+%printer { yyoutput << $$->toString().toStdString(); } <SharedStmt>;
+%printer { yyoutput << $$->toString().toStdString(); } <std::shared_ptr<Assign>>;
 %printer {
     yyoutput << "{ ";
     bool first = true;
@@ -420,41 +425,44 @@ nonempty_rtl:
 rtl_part:
     KW_FPUSH {
         $$.reset(new RTL(Address::ZERO, {
-            new Assign(FloatType::get(80), Location::tempOf(Const::get(const_cast<char *>("tmpD9"))), Location::regOf(REG_PENT_ST7)),
-            new Assign(FloatType::get(80), Location::regOf(REG_PENT_ST7), Location::regOf(REG_PENT_ST6)),
-            new Assign(FloatType::get(80), Location::regOf(REG_PENT_ST6), Location::regOf(REG_PENT_ST5)),
-            new Assign(FloatType::get(80), Location::regOf(REG_PENT_ST5), Location::regOf(REG_PENT_ST4)),
-            new Assign(FloatType::get(80), Location::regOf(REG_PENT_ST4), Location::regOf(REG_PENT_ST3)),
-            new Assign(FloatType::get(80), Location::regOf(REG_PENT_ST3), Location::regOf(REG_PENT_ST2)),
-            new Assign(FloatType::get(80), Location::regOf(REG_PENT_ST2), Location::regOf(REG_PENT_ST1)),
-            new Assign(FloatType::get(80), Location::regOf(REG_PENT_ST1), Location::regOf(REG_PENT_ST0)),
-            new Assign(FloatType::get(80), Location::regOf(REG_PENT_ST0), Location::tempOf(Const::get(const_cast<char *>("tmpD9"))))
+            std::make_shared<Assign>(FloatType::get(80), Location::tempOf(Const::get(const_cast<char *>("tmpD9"))), Location::regOf(REG_X86_ST7)),
+            std::make_shared<Assign>(FloatType::get(80), Location::regOf(REG_X86_ST7), Location::regOf(REG_X86_ST6)),
+            std::make_shared<Assign>(FloatType::get(80), Location::regOf(REG_X86_ST6), Location::regOf(REG_X86_ST5)),
+            std::make_shared<Assign>(FloatType::get(80), Location::regOf(REG_X86_ST5), Location::regOf(REG_X86_ST4)),
+            std::make_shared<Assign>(FloatType::get(80), Location::regOf(REG_X86_ST4), Location::regOf(REG_X86_ST3)),
+            std::make_shared<Assign>(FloatType::get(80), Location::regOf(REG_X86_ST3), Location::regOf(REG_X86_ST2)),
+            std::make_shared<Assign>(FloatType::get(80), Location::regOf(REG_X86_ST2), Location::regOf(REG_X86_ST1)),
+            std::make_shared<Assign>(FloatType::get(80), Location::regOf(REG_X86_ST1), Location::regOf(REG_X86_ST0)),
+            std::make_shared<Assign>(FloatType::get(80), Location::regOf(REG_X86_ST0), Location::tempOf(Const::get(const_cast<char *>("tmpD9"))))
         }));
     }
   | KW_FPOP {
         $$.reset(new RTL(Address::ZERO, {
-            new Assign(FloatType::get(80), Location::tempOf(Const::get(const_cast<char *>("tmpD9"))), Location::regOf(REG_PENT_ST0)),
-            new Assign(FloatType::get(80), Location::regOf(REG_PENT_ST0), Location::regOf(REG_PENT_ST1)),
-            new Assign(FloatType::get(80), Location::regOf(REG_PENT_ST1), Location::regOf(REG_PENT_ST2)),
-            new Assign(FloatType::get(80), Location::regOf(REG_PENT_ST2), Location::regOf(REG_PENT_ST3)),
-            new Assign(FloatType::get(80), Location::regOf(REG_PENT_ST3), Location::regOf(REG_PENT_ST4)),
-            new Assign(FloatType::get(80), Location::regOf(REG_PENT_ST4), Location::regOf(REG_PENT_ST5)),
-            new Assign(FloatType::get(80), Location::regOf(REG_PENT_ST5), Location::regOf(REG_PENT_ST6)),
-            new Assign(FloatType::get(80), Location::regOf(REG_PENT_ST6), Location::regOf(REG_PENT_ST7)),
-            new Assign(FloatType::get(80), Location::regOf(REG_PENT_ST7), Location::tempOf(Const::get(const_cast<char *>("tmpD9")))),
+            std::make_shared<Assign>(FloatType::get(80), Location::tempOf(Const::get(const_cast<char *>("tmpD9"))), Location::regOf(REG_X86_ST0)),
+            std::make_shared<Assign>(FloatType::get(80), Location::regOf(REG_X86_ST0), Location::regOf(REG_X86_ST1)),
+            std::make_shared<Assign>(FloatType::get(80), Location::regOf(REG_X86_ST1), Location::regOf(REG_X86_ST2)),
+            std::make_shared<Assign>(FloatType::get(80), Location::regOf(REG_X86_ST2), Location::regOf(REG_X86_ST3)),
+            std::make_shared<Assign>(FloatType::get(80), Location::regOf(REG_X86_ST3), Location::regOf(REG_X86_ST4)),
+            std::make_shared<Assign>(FloatType::get(80), Location::regOf(REG_X86_ST4), Location::regOf(REG_X86_ST5)),
+            std::make_shared<Assign>(FloatType::get(80), Location::regOf(REG_X86_ST5), Location::regOf(REG_X86_ST6)),
+            std::make_shared<Assign>(FloatType::get(80), Location::regOf(REG_X86_ST6), Location::regOf(REG_X86_ST7)),
+            std::make_shared<Assign>(FloatType::get(80), Location::regOf(REG_X86_ST7), Location::tempOf(Const::get(const_cast<char *>("tmpD9")))),
         }));
     }
   ;
 
 statement:
     assignment { $$ = $1; }
+  | ret_stmt   { $$ = $1; }
+  | goto_stmt  { $$ = $1; }
+  | call_stmt  { $$ = $1; }
     // example: *use* of ADDFLAGS(...)
   | NAME_CALL LPAREN arglist RPAREN {
         if (drv.m_dict->m_flagFuncs.find($1) == drv.m_dict->m_flagFuncs.end()) {
             throw SSL2::parser::syntax_error(drv.location, "Flag function not defined.");
         }
         const bool isFloat = $1 == "SETFFLAGS";
-        $$ = new Assign(Terminal::get(isFloat ? opFflags : opFlags),
+        $$ = std::make_shared<Assign>(Terminal::get(isFloat ? opFflags : opFlags),
                         Binary::get(opFlagCall, Const::get($1), listExpToExp($3.get())));
     }
   ;
@@ -462,11 +470,11 @@ statement:
 assignment:
     // example *32* %eax := 0
     assigntype location ASSIGN exp {
-        $$ = new Assign($1, $2, $4);
+        $$ = std::make_shared<Assign>($1, $2, $4);
     }
     // exampe *32* %CF=0 => %eax := %ecx
   | assigntype exp THEN location ASSIGN exp {
-        $$ = new Assign($1, $4, $6);
+        $$ = std::make_shared<Assign>($1, $4, $6);
         $$->setGuard($2);
     }
   ;
@@ -496,6 +504,29 @@ assigntype:
             default: assert(false);
             }
         }
+    }
+  ;
+
+ret_stmt:
+    KW_RET {
+        $$ = std::make_shared<ReturnStatement>();
+    }
+  ;
+
+goto_stmt:
+    KW_GOTO exp {
+        $$ = std::make_shared<GotoStatement>($2);
+    }
+  | exp THEN KW_GOTO exp {
+        std::shared_ptr<BranchStatement> jump(new BranchStatement($4));
+        jump->setCondExpr($1);
+        $$ = jump;
+    }
+  ;
+
+call_stmt:
+    KW_CALL exp {
+        $$ = std::make_shared<CallStatement>($2);
     }
   ;
 
@@ -539,28 +570,23 @@ str_list:
   ;
 
 str_array:
-    str_array COMMA str {
+    str_array COMMA STR_LITERAL {
         $1->push_back($3);
         $$ = std::move($1);
     }
-  | str {
+  | STR_LITERAL {
         $$.reset(new std::deque<QString>({ $1 }));
     }
   ;
 
-str:
-    DQUOTE DQUOTE       { $$ = QString(); }
-  | DQUOTE IDENT DQUOTE { $$ = std::move($2); }
-  ;
-
 instr_def:
-    instr_name {
-        $1->getRefMap(drv.indexrefmap);
-    } paramlist {
-        drv.m_dict->m_definedParams.insert($3->begin(), $3->end());
-    } rtl {
+    KW_INSTRUCTION instr_name {
+        $2->getRefMap(drv.indexrefmap);
+    } LPAREN paramlist RPAREN LBRACE {
+        drv.m_dict->m_definedParams.insert($5->begin(), $5->end());
+    } rtl RBRACE {
         // This function expands the tables and saves the expanded RTLs to the dictionary
-        drv.expandTables($1, $3, $5, drv.m_dict);
+        drv.expandTables($2, $5, $9, drv.m_dict);
         drv.m_dict->m_definedParams.clear();
     }
   ;
@@ -572,7 +598,8 @@ instr_name:
   ;
 
 instr_name_elem:
-    IDENT {
+    // example: "foo"
+    STR_LITERAL {
         $$.reset(new InsNameElem($1));
     }
     // example: FOO[IDX] where FOO is some kind of pre-defined string table

@@ -28,77 +28,71 @@
 
 
 ReturnStatement::ReturnStatement()
-    : m_retAddr(Address::INVALID)
+    : Statement(StmtType::Ret)
+    , m_retAddr(Address::INVALID)
 {
-    m_kind = StmtType::Ret;
 }
 
 
 ReturnStatement::~ReturnStatement()
 {
-    qDeleteAll(m_returns);
-    qDeleteAll(m_modifieds);
 }
 
 
-Statement *ReturnStatement::clone() const
+ReturnStatement::iterator ReturnStatement::erase(ReturnStatement::iterator it)
 {
-    ReturnStatement *ret = new ReturnStatement();
+    assert(it != end());
+    return m_returns.erase(it);
+}
+
+
+SharedStmt ReturnStatement::clone() const
+{
+    std::shared_ptr<ReturnStatement> ret(new ReturnStatement());
 
     for (auto const &elem : m_modifieds) {
-        ret->m_modifieds.append(static_cast<ImplicitAssign *>(elem)->clone());
+        ret->m_modifieds.append(elem->as<ImplicitAssign>()->clone());
     }
 
     for (auto const &elem : m_returns) {
-        ret->m_returns.append(static_cast<Assignment *>(elem)->clone());
+        ret->m_returns.append(elem->as<ImplicitAssign>()->clone());
     }
 
     ret->m_retAddr = m_retAddr;
     ret->m_col.makeCloneOf(m_col);
 
     // Statement members
-    ret->m_bb     = m_bb;
-    ret->m_proc   = m_proc;
-    ret->m_number = m_number;
+    ret->m_fragment = m_fragment;
+    ret->m_proc     = m_proc;
+    ret->m_number   = m_number;
+
     return ret;
 }
 
 
-ReturnStatement::iterator ReturnStatement::erase(ReturnStatement::iterator it)
+void ReturnStatement::getDefinitions(LocationSet &ls, bool assumeABICompliance) const
 {
-    auto endIt = end();
-    Q_UNUSED(endIt);
-    assert(it != endIt);
-
-    Statement *removed = *it;
-    it                 = m_returns.erase(it);
-    delete removed;
-
-    return it;
-}
-
-
-bool ReturnStatement::accept(StmtVisitor *visitor) const
-{
-    return visitor->visit(this);
-}
-
-
-void ReturnStatement::simplify()
-{
-    for (Statement *s : m_modifieds) {
-        s->simplify();
-    }
-
-    for (Statement *s : m_returns) {
-        s->simplify();
+    for (const SharedStmt &stmt : m_modifieds) {
+        stmt->getDefinitions(ls, assumeABICompliance);
     }
 }
 
 
-void ReturnStatement::addReturn(Assignment *a)
+bool ReturnStatement::definesLoc(SharedExp loc) const
 {
-    m_returns.append(a);
+    /// Does a ReturnStatement define anything?
+    /// Not really, the locations are already defined earlier in the procedure.
+    /// However, nothing comes after the return statement, so it doesn't hurt
+    /// to pretend it does, and this is a place to store the return type(s) for example.
+    /// FIXME: seems it would be cleaner to say that Return Statements don't define anything.
+
+    for (const SharedStmt &stmt : m_modifieds) {
+        if (stmt->definesLoc(loc)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 
@@ -106,7 +100,7 @@ bool ReturnStatement::search(const Exp &pattern, SharedExp &result) const
 {
     result = nullptr;
 
-    for (const Statement *ret : m_returns) {
+    for (const SharedStmt &ret : m_returns) {
         if (ret->search(pattern, result)) {
             return true;
         }
@@ -116,29 +110,11 @@ bool ReturnStatement::search(const Exp &pattern, SharedExp &result) const
 }
 
 
-bool ReturnStatement::searchAndReplace(const Exp &pattern, SharedExp replace, bool cc)
-{
-    bool change = false;
-
-    for (Statement *ret : m_returns) {
-        change |= ret->searchAndReplace(pattern, replace, cc);
-    }
-
-    if (cc) {
-        for (Assign *def : m_col) {
-            change |= def->searchAndReplace(pattern, replace);
-        }
-    }
-
-    return change;
-}
-
-
 bool ReturnStatement::searchAll(const Exp &pattern, std::list<SharedExp> &result) const
 {
     bool found = false;
 
-    for (Statement *ret : m_returns) {
+    for (SharedStmt ret : m_returns) {
         if (ret->searchAll(pattern, result)) {
             found = true;
         }
@@ -148,11 +124,89 @@ bool ReturnStatement::searchAll(const Exp &pattern, std::list<SharedExp> &result
 }
 
 
+bool ReturnStatement::searchAndReplace(const Exp &pattern, SharedExp replace, bool cc)
+{
+    bool change = false;
+
+    for (SharedStmt ret : m_returns) {
+        change |= ret->searchAndReplace(pattern, replace, cc);
+    }
+
+    if (cc) {
+        for (std::shared_ptr<Assign> def : m_col) {
+            change |= def->searchAndReplace(pattern, replace);
+        }
+    }
+
+    return change;
+}
+
+
+SharedConstType ReturnStatement::getTypeForExp(SharedConstExp e) const
+{
+    for (const SharedStmt &stmt : m_modifieds) {
+        if (*stmt->as<Assignment>()->getLeft() == *e) {
+            return stmt->as<Assignment>()->getType();
+        }
+    }
+
+    return nullptr;
+}
+
+
+SharedType ReturnStatement::getTypeForExp(SharedExp e)
+{
+    for (const SharedStmt &stmt : m_modifieds) {
+        if (*stmt->as<Assignment>()->getLeft() == *e) {
+            return stmt->as<Assignment>()->getType();
+        }
+    }
+
+    return nullptr;
+}
+
+
+void ReturnStatement::setTypeForExp(SharedExp e, SharedType ty)
+{
+    for (SharedStmt stmt : m_modifieds) {
+        if (*stmt->as<Assignment>()->getLeft() == *e) {
+            stmt->as<Assignment>()->setType(ty);
+            break;
+        }
+    }
+
+    for (SharedStmt stmt : m_returns) {
+        if (*stmt->as<Assignment>()->getLeft() == *e) {
+            stmt->as<Assignment>()->setType(ty);
+            return;
+        }
+    }
+}
+
+
+void ReturnStatement::simplify()
+{
+    for (SharedStmt s : m_modifieds) {
+        s->simplify();
+    }
+
+    for (SharedStmt s : m_returns) {
+        s->simplify();
+    }
+}
+
+
+bool ReturnStatement::accept(StmtVisitor *visitor) const
+{
+    return visitor->visit(this);
+}
+
+
 bool ReturnStatement::accept(StmtExpVisitor *v)
 {
     bool visitChildren = true;
 
-    if (!v->visit(this, visitChildren)) {
+    if (!v->visit(shared_from_this()->as<ReturnStatement>(), visitChildren)) {
         return false;
     }
     else if (!visitChildren) {
@@ -160,7 +214,7 @@ bool ReturnStatement::accept(StmtExpVisitor *v)
     }
 
     if (!v->isIgnoreCol()) {
-        for (Statement *stmt : m_col) {
+        for (SharedStmt stmt : m_col) {
             if (!stmt->accept(v)) {
                 return false;
             }
@@ -169,14 +223,14 @@ bool ReturnStatement::accept(StmtExpVisitor *v)
         // EXPERIMENTAL: for now, count the modifieds as if they are a collector (so most, if not
         // all of the time, ignore them). This is so that we can detect better when a definition is
         // used only once, and therefore propagate anything to it
-        for (Statement *stmt : m_modifieds) {
+        for (SharedStmt stmt : m_modifieds) {
             if (!stmt->accept(v)) {
                 return false;
             }
         }
     }
 
-    for (Statement *stmt : m_returns) {
+    for (SharedStmt stmt : m_returns) {
         if (!stmt->accept(v)) {
             return false;
         }
@@ -189,7 +243,7 @@ bool ReturnStatement::accept(StmtExpVisitor *v)
 bool ReturnStatement::accept(StmtModifier *v)
 {
     bool visitChildren = true;
-    v->visit(this, visitChildren);
+    v->visit(shared_from_this()->as<ReturnStatement>(), visitChildren);
 
     if (!visitChildren) {
         return true;
@@ -205,13 +259,13 @@ bool ReturnStatement::accept(StmtModifier *v)
         }
     }
 
-    for (Statement *stmt : m_modifieds) {
+    for (SharedStmt stmt : m_modifieds) {
         if (!stmt->accept(v)) {
             return false;
         }
     }
 
-    for (Statement *stmt : m_returns) {
+    for (SharedStmt stmt : m_returns) {
         if (!stmt->accept(v)) {
             return false;
         }
@@ -224,15 +278,15 @@ bool ReturnStatement::accept(StmtModifier *v)
 bool ReturnStatement::accept(StmtPartModifier *v)
 {
     bool visitChildren = true;
-    v->visit(this, visitChildren);
+    v->visit(shared_from_this()->as<ReturnStatement>(), visitChildren);
 
-    for (Statement *stmt : m_modifieds) {
+    for (SharedStmt stmt : m_modifieds) {
         if (!stmt->accept(v)) {
             return false;
         }
     }
 
-    for (Statement *stmt : m_returns) {
+    for (SharedStmt stmt : m_returns) {
         if (!stmt->accept(v)) {
             return false;
         }
@@ -242,89 +296,21 @@ bool ReturnStatement::accept(StmtPartModifier *v)
 }
 
 
-bool ReturnStatement::definesLoc(SharedExp loc) const
-{
-    /// Does a ReturnStatement define anything?
-    /// Not really, the locations are already defined earlier in the procedure.
-    /// However, nothing comes after the return statement, so it doesn't hurt
-    /// to pretend it does, and this is a place to store the return type(s) for example.
-    /// FIXME: seems it would be cleaner to say that Return Statements don't define anything.
-
-    for (const Statement *stmt : m_modifieds) {
-        if (stmt->definesLoc(loc)) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-
-void ReturnStatement::getDefinitions(LocationSet &ls, bool assumeABICompliance) const
-{
-    for (Statement *stmt : m_modifieds) {
-        stmt->getDefinitions(ls, assumeABICompliance);
-    }
-}
-
-
-SharedConstType ReturnStatement::getTypeForExp(SharedConstExp e) const
-{
-    for (Statement *stmt : m_modifieds) {
-        if (*static_cast<Assignment *>(stmt)->getLeft() == *e) {
-            return static_cast<Assignment *>(stmt)->getType();
-        }
-    }
-
-    return nullptr;
-}
-
-
-SharedType ReturnStatement::getTypeForExp(SharedExp e)
-{
-    for (Statement *stmt : m_modifieds) {
-        if (*static_cast<Assignment *>(stmt)->getLeft() == *e) {
-            return static_cast<Assignment *>(stmt)->getType();
-        }
-    }
-
-    return nullptr;
-}
-
-
-void ReturnStatement::setTypeForExp(SharedExp e, SharedType ty)
-{
-    for (Statement *stmt : m_modifieds) {
-        if (*static_cast<Assignment *>(stmt)->getLeft() == *e) {
-            static_cast<Assignment *>(stmt)->setType(ty);
-            break;
-        }
-    }
-
-    for (Statement *stmt : m_returns) {
-        if (*static_cast<Assignment *>(stmt)->getLeft() == *e) {
-            static_cast<Assignment *>(stmt)->setType(ty);
-            return;
-        }
-    }
-}
-
-
-#define RETSTMT_COLS 120
-
 void ReturnStatement::print(OStream &os) const
 {
+    const int RETSTMT_COLS = 120;
+
     os << qSetFieldWidth(4) << m_number << qSetFieldWidth(0) << " ";
-
     os << "RET";
-    bool first      = true;
-    unsigned column = 19;
 
-    for (const Statement *stmt : m_returns) {
+    bool first = true;
+    int column = 19;
+
+    for (const SharedStmt &stmt : m_returns) {
         QString tgt;
         OStream ost(&tgt);
-        static_cast<const Assignment *>(stmt)->printCompact(ost);
-        unsigned len = tgt.length();
+        stmt->as<const Assignment>()->printCompact(ost);
+        const int len = tgt.length();
 
         if (first) {
             first = false;
@@ -357,17 +343,17 @@ void ReturnStatement::print(OStream &os) const
         first  = true;
         column = 25;
 
-        for (const Statement *stmt : m_modifieds) {
+        for (const SharedStmt &stmt : m_modifieds) {
             QString tgt2;
             OStream ost(&tgt2);
-            const Assignment *as = static_cast<const Assignment *>(stmt);
-            const SharedType ty  = as->getType();
+            std::shared_ptr<const Assignment> asgn = stmt->as<const Assignment>();
+            const SharedType ty                    = asgn->getType();
 
             if (ty) {
                 ost << "*" << ty << "* ";
             }
 
-            ost << as->getLeft();
+            ost << asgn->getLeft();
             unsigned len = tgt2.length();
 
             if (first) {
@@ -400,14 +386,16 @@ void ReturnStatement::print(OStream &os) const
 
 void ReturnStatement::updateModifieds()
 {
-    auto sig = m_proc->getSignature();
-    StatementList oldMods(m_modifieds); // Copy the old modifieds
+    assert(m_proc != nullptr);
+    assert(m_fragment != nullptr);
 
+    StatementList oldMods(m_modifieds); // Copy the old modifieds
     m_modifieds.clear();
 
-    if ((m_bb->getNumPredecessors() == 1) && m_bb->getPredecessors()[0]->getLastStmt()->isCall()) {
-        CallStatement *call = static_cast<CallStatement *>(
-            m_bb->getPredecessors()[0]->getLastStmt());
+    if ((m_fragment->getNumPredecessors() == 1) &&
+        m_fragment->getPredecessor(0)->getLastStmt()->isCall()) {
+        std::shared_ptr<CallStatement>
+            call = m_fragment->getPredecessor(0)->getLastStmt()->as<CallStatement>();
 
         IFrontEnd *fe = m_proc->getProg()->getFrontEnd();
         if (call->getDestProc() && fe->isNoReturnCallDest(call->getDestProc()->getName())) {
@@ -416,20 +404,20 @@ void ReturnStatement::updateModifieds()
     }
 
     // For each location in the collector, make sure that there is an assignment in the old
-    // modifieds, which will be filtered and sorted to become the new modifieds Ick... O(N*M) (N
-    // existing modifeds, M collected locations)
+    // modifieds, which will be filtered and sorted to become the new modifieds Ick... O(N*M)
+    // (N existing modifeds, M collected locations)
 
-    for (Statement *stmt : m_col) {
-        bool found       = false;
-        Assign *as       = static_cast<Assign *>(stmt);
-        SharedExp colLhs = as->getLeft();
+    for (SharedStmt stmt : m_col) {
+        bool found                   = false;
+        std::shared_ptr<Assign> asgn = stmt->as<Assign>();
+        SharedExp colLhs             = asgn->getLeft();
 
-        if (m_proc->filterReturns(colLhs)) {
+        if (!m_proc->canBeReturn(colLhs)) {
             continue; // Filtered out
         }
 
-        for (Statement *s : oldMods) {
-            SharedExp lhs = static_cast<Assignment *>(s)->getLeft();
+        for (SharedStmt s : oldMods) {
+            SharedExp lhs = s->as<Assignment>()->getLeft();
 
             if (*lhs == *colLhs) {
                 found = true;
@@ -438,10 +426,10 @@ void ReturnStatement::updateModifieds()
         }
 
         if (!found) {
-            ImplicitAssign *ias = new ImplicitAssign(as->getType()->clone(),
-                                                     as->getLeft()->clone());
+            std::shared_ptr<ImplicitAssign> ias(
+                new ImplicitAssign(asgn->getType()->clone(), asgn->getLeft()->clone()));
             ias->setProc(m_proc); // Comes from the Collector
-            ias->setBB(m_bb);
+            ias->setFragment(m_fragment);
             oldMods.append(ias);
         }
     }
@@ -451,31 +439,34 @@ void ReturnStatement::updateModifieds()
     // new list. So read the old modifications in reverse order
     for (auto rit = oldMods.rbegin(); rit != oldMods.rend(); ++rit) {
         // Make sure the LHS is still in the collector
-        Assignment *as = static_cast<Assignment *>(*rit);
-        SharedExp lhs  = as->getLeft();
+        std::shared_ptr<Assignment> asgn = (*rit)->as<Assignment>();
+        SharedExp lhs                    = asgn->getLeft();
 
-        if (!m_col.existsOnLeft(lhs)) {
-            delete *rit;
+        if (!m_col.hasDefOf(lhs)) {
             continue; // Not in collector: delete it (don't copy it)
         }
 
-        if (m_proc->filterReturns(lhs)) {
-            delete *rit;
-            continue; // Filtered out: delete it
+        // can happen e.g. when we can prove a function preserves an exp
+        // when we could not do this before, e.g. after propagation
+        if (!m_proc->canBeReturn(lhs)) {
+            continue;
         }
 
-        m_modifieds.append(as);
+        m_modifieds.append(asgn);
     }
 
-    m_modifieds.sort([&sig](const Statement *mod1, const Statement *mod2) {
-        return sig->returnCompare(*static_cast<const Assignment *>(mod1),
-                                  *static_cast<const Assignment *>(mod2));
+    auto sig = m_proc->getSignature();
+
+    m_modifieds.sort([&sig](const SharedConstStmt &mod1, const SharedConstStmt &mod2) {
+        return sig->returnCompare(*mod1->as<const Assignment>(), *mod2->as<const Assignment>());
     });
 }
 
 
 void ReturnStatement::updateReturns()
 {
+    assert(m_proc != nullptr);
+
     auto sig     = m_proc->getSignature();
     const int sp = sig->getStackRegister();
 
@@ -483,13 +474,13 @@ void ReturnStatement::updateReturns()
     m_returns.clear();
 
     // For each location in the modifieds, make sure that there is an assignment in the old returns,
-    // which will be filtered and sorted to become the new returns Ick... O(N*M) (N existing
-    // returns, M modifieds locations)
-    for (Statement *stmt : m_modifieds) {
+    // which will be filtered and sorted to become the new returns
+    // Ick... O(N*M) (N existing returns, M modifieds locations)
+    for (SharedStmt stmt : m_modifieds) {
         bool found    = false;
-        SharedExp loc = static_cast<Assignment *>(stmt)->getLeft();
+        SharedExp loc = stmt->as<Assignment>()->getLeft();
 
-        if (m_proc->filterReturns(loc)) {
+        if (!m_proc->canBeReturn(loc)) {
             continue; // Filtered out
         }
 
@@ -499,8 +490,8 @@ void ReturnStatement::updateReturns()
             continue;
         }
 
-        for (Statement *oldRet : oldRets) {
-            SharedExp lhs = static_cast<Assign *>(oldRet)->getLeft();
+        for (SharedStmt oldRet : oldRets) {
+            SharedExp lhs = oldRet->as<Assign>()->getLeft();
 
             if (*lhs == *loc) {
                 found = true;
@@ -511,58 +502,53 @@ void ReturnStatement::updateReturns()
         if (!found) {
             // Find the definition that reaches the return statement's collector
             SharedExp rhs = m_col.findDefFor(loc);
-            Assign *as    = new Assign(loc->clone(), rhs->clone());
-            as->setProc(m_proc);
-            as->setBB(m_bb);
-            oldRets.append(as);
+            std::shared_ptr<Assign> asgn(new Assign(loc->clone(), rhs->clone()));
+            asgn->setProc(m_proc);
+            asgn->setFragment(m_fragment);
+            oldRets.append(asgn);
         }
     }
 
-    for (Statement *stmt : oldRets) {
+    for (SharedStmt stmt : oldRets) {
         // Make sure the LHS is still in the modifieds
         assert(stmt->isAssign());
-        Assign *as    = static_cast<Assign *>(stmt);
-        SharedExp lhs = as->getLeft();
+        std::shared_ptr<Assign> asgn = stmt->as<Assign>();
+        SharedExp lhs                = asgn->getLeft();
 
         if (!m_modifieds.existsOnLeft(lhs)) {
-            delete stmt;
             continue; // Not in modifieds: delete it (don't copy it)
         }
 
-        if (m_proc->filterReturns(lhs)) {
-            delete stmt;
+        if (!m_proc->canBeReturn(lhs)) {
             continue; // Filtered out: delete it
         }
 
         // Preserveds are NOT returns (nothing changes, so what are we returning?)
         // Check if it is a preserved location, e.g. r29 := r29{-}
-        SharedExp rhs = as->getRight();
+        SharedExp rhs = asgn->getRight();
 
         if (rhs->isSubscript() && rhs->access<RefExp>()->isImplicitDef() &&
             (*rhs->getSubExp1() == *lhs)) {
-            delete stmt;
-            continue; // Filter out the preserveds
+            continue;
         }
 
-        m_returns.append(as);
+        m_returns.append(asgn);
     }
 
-    m_returns.sort([&sig](const Statement *ret1, const Statement *ret2) {
-        return sig->returnCompare(*static_cast<const Assignment *>(ret1),
-                                  *static_cast<const Assignment *>(ret2));
+    m_returns.sort([&sig](const SharedConstStmt &ret1, const SharedConstStmt &ret2) {
+        return sig->returnCompare(*ret1->as<const Assignment>(), *ret2->as<const Assignment>());
     });
 }
 
 
-void ReturnStatement::removeModified(SharedExp loc)
+void ReturnStatement::addReturn(const std::shared_ptr<Assignment> &a)
 {
-    Statement *mod = m_modifieds.removeFirstDefOf(loc);
-    if (mod) {
-        delete mod;
-    }
+    m_returns.append(a);
+}
 
-    Statement *ret = m_returns.removeFirstDefOf(loc);
-    if (ret) {
-        delete ret;
-    }
+
+void ReturnStatement::removeFromModifiedsAndReturns(SharedExp loc)
+{
+    m_modifieds.removeFirstDefOf(loc);
+    m_returns.removeFirstDefOf(loc);
 }

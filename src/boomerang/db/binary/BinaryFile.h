@@ -31,7 +31,8 @@ enum class LoadFmt : uint8_t
     PE,
     EXE,
     MACHO,
-    LX
+    LX,
+    ST20
 };
 
 /// determines which instruction set to use
@@ -39,8 +40,7 @@ enum class Machine : uint8_t
 {
     INVALID = 0xFF,
     UNKNOWN = 0,
-    PENTIUM,
-    SPARC,
+    X86,
     PPC,
     ST20
 };

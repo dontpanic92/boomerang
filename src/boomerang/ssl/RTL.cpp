@@ -25,7 +25,7 @@
 #include <cstring>
 
 
-RTL::RTL(Address instrAddr, const std::list<Statement *> *listStmt /*= nullptr*/)
+RTL::RTL(Address instrAddr, const StmtList *listStmt /*= nullptr*/)
     : m_nativeAddr(instrAddr)
 {
     if (listStmt) {
@@ -34,7 +34,7 @@ RTL::RTL(Address instrAddr, const std::list<Statement *> *listStmt /*= nullptr*/
 }
 
 
-RTL::RTL(Address instrAddr, const std::initializer_list<Statement *> &statements)
+RTL::RTL(Address instrAddr, const std::initializer_list<SharedStmt> &statements)
     : m_stmts(statements)
     , m_nativeAddr(instrAddr)
 {
@@ -50,7 +50,6 @@ RTL::RTL(const RTL &other)
 
 RTL::~RTL()
 {
-    qDeleteAll(m_stmts);
 }
 
 
@@ -63,7 +62,6 @@ RTL &RTL::operator=(const RTL &other)
     m_nativeAddr = other.m_nativeAddr;
 
     // Do a deep copy always
-    qDeleteAll(*this);
     clear();
 
     other.deepCopyList(m_stmts);
@@ -71,30 +69,24 @@ RTL &RTL::operator=(const RTL &other)
 }
 
 
-void RTL::deepCopyList(std::list<Statement *> &dest) const
+void RTL::deepCopyList(StmtList &dest) const
 {
-    for (const Statement *it : *this) {
+    for (const SharedStmt &it : *this) {
         dest.push_back(it->clone());
     }
 }
 
 
-void RTL::append(Statement *s)
+void RTL::append(const SharedStmt &s)
 {
     assert(s != nullptr);
-
-    if (!empty() && back()->isFlagAssign()) {
-        insert(std::prev(end()), s);
-        return;
-    }
-
     m_stmts.push_back(s);
 }
 
 
-void RTL::append(const std::list<Statement *> &stmts)
+void RTL::append(const StmtList &stmts)
 {
-    for (Statement *stmt : stmts) {
+    for (const SharedStmt &stmt : stmts) {
         m_stmts.push_back(stmt->clone());
     }
 }
@@ -109,7 +101,7 @@ void RTL::print(OStream &os) const
     // First line has 8 extra chars as above
     bool firstStmt = true;
 
-    for (Statement *stmt : *this) {
+    for (SharedStmt stmt : *this) {
         if (firstStmt) {
             os << " ";
         }
@@ -143,11 +135,11 @@ QString RTL::toString() const
 void RTL::simplify()
 {
     for (iterator it = begin(); it != end();) {
-        Statement *s = *it;
-        s->simplify();
+        (*it)->simplify();
+        SharedStmt s = *it;
 
         if (s->isBranch()) {
-            SharedExp cond = static_cast<BranchStatement *>(s)->getCondExpr();
+            SharedExp cond = s->as<BranchStatement>()->getCondExpr();
 
             if (cond && cond->isIntConst()) {
                 if (cond->access<Const>()->getInt() == 0) {
@@ -158,20 +150,23 @@ void RTL::simplify()
 
                 LOG_VERBOSE("Replacing branch with true condition with goto at %1 %2", getAddress(),
                             *it);
-                BasicBlock *bb = (*it)->getBB();
-                *it = new GotoStatement(static_cast<BranchStatement *>(s)->getFixedDest());
-                (*it)->setBB(bb);
+                IRFragment *frag = (*it)->getFragment();
+                *it = std::make_shared<GotoStatement>(s->as<BranchStatement>()->getFixedDest());
+                (*it)->setFragment(frag);
             }
         }
         else if (s->isAssign()) {
-            SharedExp guard = static_cast<Assign *>(s)->getGuard();
+            SharedExp guard = s->as<Assign>()->getGuard();
 
-            if (guard && (guard->isFalse() ||
-                          (guard->isIntConst() && (guard->access<Const>()->getInt() == 0)))) {
+            if (guard && guard->isFalse()) {
                 // This assignment statement can be deleted
                 LOG_VERBOSE("Removing assignment with false guard at %1 %2", getAddress(), *it);
                 it = erase(it);
                 continue;
+            }
+            else if (guard && guard->isTrue()) {
+                // The guard can be deleted
+                s->as<Assign>()->setGuard(nullptr);
             }
         }
 
@@ -180,18 +175,7 @@ void RTL::simplify()
 }
 
 
-bool RTL::isCall() const
-{
-    if (empty()) {
-        return false;
-    }
-
-    Statement *last = this->back();
-    return last->getKind() == StmtType::Call;
-}
-
-
-Statement *RTL::getHlStmt() const
+SharedStmt RTL::getHlStmt() const
 {
     for (auto rit = rbegin(); rit != rend(); ++rit) {
         if ((*rit)->getKind() != StmtType::Assign) {

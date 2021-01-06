@@ -19,6 +19,8 @@
 #include "boomerang/ssl/exp/Location.h"
 #include "boomerang/util/log/Log.h"
 
+#include <stdexcept>
+
 
 ST20FrontEnd::ST20FrontEnd(Project *project)
     : DefaultFrontEnd(project)
@@ -52,15 +54,15 @@ Address ST20FrontEnd::findMainEntryPoint(bool &gotMain)
 }
 
 
-bool ST20FrontEnd::processProc(UserProc *proc, Address entryAddr)
+bool ST20FrontEnd::disassembleProc(UserProc *proc, Address entryAddr)
 {
     // Call the base class to do most of the work
-    if (!DefaultFrontEnd::processProc(proc, entryAddr)) {
+    if (!DefaultFrontEnd::disassembleProc(proc, entryAddr)) {
         return false;
     }
 
     // This will get done twice; no harm
-    proc->setEntryBB();
+    proc->setEntryFragment();
 
     return true;
 }

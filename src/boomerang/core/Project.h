@@ -168,7 +168,7 @@ public:
     /// Called during the decompilation process when resuming decompilation of this proc.
     void alertDecompiling(UserProc *proc);
 
-    void alertDecompileDebugPoint(UserProc *p, const char *description);
+    void alertDecompileDebugPoint(UserProc *p, const QString &description);
 
     /// Called once on decompilation end.
     void alertDecompilationEnd();
@@ -215,5 +215,5 @@ private:
     std::unique_ptr<BinaryFile> m_loadedBinary;
     std::unique_ptr<Prog> m_prog;
 
-    IFrontEnd *m_fe;
+    IFrontEnd *m_fe = nullptr;
 };

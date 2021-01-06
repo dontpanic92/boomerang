@@ -9,7 +9,7 @@
 #pragma endregion License
 #include "BranchStatement.h"
 
-#include "boomerang/db/BasicBlock.h"
+#include "boomerang/db/IRFragment.h"
 #include "boomerang/ssl/exp/Binary.h"
 #include "boomerang/ssl/exp/Const.h"
 #include "boomerang/ssl/exp/Terminal.h"
@@ -27,11 +27,23 @@
 #include <QTextStreamManipulator>
 
 
-BranchStatement::BranchStatement()
-    : m_jumpType(BranchType::JE)
+BranchStatement::BranchStatement(Address dest)
+    : GotoStatement(dest)
+    , m_jumpType(BranchType::JE)
     , m_cond(nullptr)
     , m_isFloat(false)
 {
+    m_kind = StmtType::Branch;
+}
+
+
+BranchStatement::BranchStatement(SharedExp dest)
+    : GotoStatement(dest)
+    , m_jumpType(BranchType::JE)
+    , m_cond(nullptr)
+    , m_isFloat(false)
+{
+    assert(dest != nullptr);
     m_kind = StmtType::Branch;
 }
 
@@ -46,48 +58,10 @@ void BranchStatement::setCondType(BranchType cond, bool usesFloat /*= false*/)
     m_jumpType = cond;
     m_isFloat  = usesFloat;
 
-    // set cond to a high level representation of this type
-    SharedExp p = nullptr;
-
-    switch (cond) {
-    case BranchType::JE: p = Binary::get(opEquals, Terminal::get(opFlags), Const::get(0)); break;
-    case BranchType::JNE: p = Binary::get(opNotEqual, Terminal::get(opFlags), Const::get(0)); break;
-    case BranchType::JSL: p = Binary::get(opLess, Terminal::get(opFlags), Const::get(0)); break;
-    case BranchType::JSLE: p = Binary::get(opLessEq, Terminal::get(opFlags), Const::get(0)); break;
-    case BranchType::JSGE: p = Binary::get(opGtrEq, Terminal::get(opFlags), Const::get(0)); break;
-    case BranchType::JSG: p = Binary::get(opGtr, Terminal::get(opFlags), Const::get(0)); break;
-    case BranchType::JUL: p = Binary::get(opLessUns, Terminal::get(opFlags), Const::get(0)); break;
-    case BranchType::JULE:
-        p = Binary::get(opLessEqUns, Terminal::get(opFlags), Const::get(0));
-        break;
-
-    case BranchType::JUGE:
-        p = Binary::get(opGtrEqUns, Terminal::get(opFlags), Const::get(0));
-        break;
-
-    case BranchType::JUG: p = Binary::get(opGtrUns, Terminal::get(opFlags), Const::get(0)); break;
-    case BranchType::JMI: p = Binary::get(opLess, Terminal::get(opFlags), Const::get(0)); break;
-    case BranchType::JPOS: p = Binary::get(opGtr, Terminal::get(opFlags), Const::get(0)); break;
-    case BranchType::JOF: p = Binary::get(opLessUns, Terminal::get(opFlags), Const::get(0)); break;
-    case BranchType::JNOF: p = Binary::get(opGtrUns, Terminal::get(opFlags), Const::get(0)); break;
-    case BranchType::JPAR:
-    case BranchType::JNPAR:
-        // Can't handle this properly here; leave an impossible expression involving %flags so
-        // propagation will still happen, and we can recognise this later in condToRelational()
-        // Update: these expressions seem to get ignored ???
-        p = Binary::get(opEquals, Terminal::get(opFlags), Const::get(999));
-        break;
-
-    case BranchType::INVALID: assert(false); break;
-    }
-
     // this is such a hack.. preferably we should actually recognise SUBFLAGS32(..,..,..) > 0
     // instead of just SUBFLAGS32(..,..,..) but I'll leave this in here for the moment as it
     // actually works.
-    p = Terminal::get(usesFloat ? opFflags : opFlags);
-
-    assert(p);
-    setCondExpr(p);
+    setCondExpr(Terminal::get(usesFloat ? opFflags : opFlags));
 }
 
 
@@ -103,74 +77,78 @@ void BranchStatement::setCondExpr(SharedExp pe)
 }
 
 
-BasicBlock *BranchStatement::getFallBB() const
+IRFragment *BranchStatement::getFallFragment() const
 {
-    if (!m_bb || m_bb->getNumSuccessors() != 2) {
+    if (!m_fragment || m_fragment->getNumSuccessors() != 2) {
         return nullptr;
     }
 
-    return m_bb->getSuccessor(BELSE);
+    return m_fragment->getSuccessor(BELSE);
 }
 
 
-void BranchStatement::setFallBB(BasicBlock *destBB)
+void BranchStatement::setFallFragment(IRFragment *destFrag)
 {
-    if (!m_bb || m_bb->getNumSuccessors() != 2) {
+    if (!m_fragment || m_fragment->getNumSuccessors() != 2) {
         return;
     }
 
-    BasicBlock *oldDestBB = m_bb->getSuccessor(BELSE);
-    if (destBB != oldDestBB) {
-        oldDestBB->removePredecessor(m_bb);
-        m_bb->setSuccessor(BELSE, destBB);
-        destBB->addPredecessor(m_bb);
+    IRFragment *oldDestFrag = m_fragment->getSuccessor(BELSE);
+    if (destFrag != oldDestFrag) {
+        oldDestFrag->removePredecessor(m_fragment);
+        m_fragment->setSuccessor(BELSE, destFrag);
+        destFrag->addPredecessor(m_fragment);
     }
 }
 
 
-BasicBlock *BranchStatement::getTakenBB() const
+IRFragment *BranchStatement::getTakenFragment() const
 {
-    if (!m_bb || m_bb->getNumSuccessors() != 2) {
+    if (!m_fragment || m_fragment->getNumSuccessors() != 2) {
         return nullptr;
     }
 
-    return m_bb->getSuccessor(BTHEN);
+    return m_fragment->getSuccessor(BTHEN);
 }
 
 
-void BranchStatement::setTakenBB(BasicBlock *destBB)
+void BranchStatement::setTakenFragment(IRFragment *destFrag)
 {
-    if (!m_bb || m_bb->getNumSuccessors() != 2) {
+    if (!m_fragment || m_fragment->getNumSuccessors() != 2) {
         return;
     }
 
-    BasicBlock *oldDestBB = m_bb->getSuccessor(BTHEN);
-    if (destBB != oldDestBB) {
-        oldDestBB->removePredecessor(m_bb);
-        m_bb->setSuccessor(BTHEN, destBB);
-        destBB->addPredecessor(m_bb);
+    IRFragment *oldDestFrag = m_fragment->getSuccessor(BTHEN);
+    if (destFrag != oldDestFrag) {
+        oldDestFrag->removePredecessor(m_fragment);
+        m_fragment->setSuccessor(BTHEN, destFrag);
+        destFrag->addPredecessor(m_fragment);
     }
 }
 
 
 bool BranchStatement::search(const Exp &pattern, SharedExp &result) const
 {
+    if (GotoStatement::search(pattern, result)) {
+        return true;
+    }
+
     if (m_cond) {
         return m_cond->search(pattern, result);
     }
 
-    result = nullptr;
     return false;
 }
 
 
 bool BranchStatement::searchAndReplace(const Exp &pattern, SharedExp replace, bool cc)
 {
-    GotoStatement::searchAndReplace(pattern, replace, cc);
-    bool change = false;
+    bool change = GotoStatement::searchAndReplace(pattern, replace, cc);
 
     if (m_cond) {
-        m_cond = m_cond->searchReplaceAll(pattern, replace, change);
+        bool thisChange = false;
+        m_cond          = m_cond->searchReplaceAll(pattern, replace, thisChange);
+        change |= thisChange;
     }
 
     return change;
@@ -179,11 +157,13 @@ bool BranchStatement::searchAndReplace(const Exp &pattern, SharedExp replace, bo
 
 bool BranchStatement::searchAll(const Exp &pattern, std::list<SharedExp> &result) const
 {
+    bool found = GotoStatement::searchAll(pattern, result);
+
     if (m_cond) {
-        return m_cond->searchAll(pattern, result);
+        found |= m_cond->searchAll(pattern, result);
     }
 
-    return false;
+    return found;
 }
 
 
@@ -192,10 +172,7 @@ void BranchStatement::print(OStream &os) const
     os << qSetFieldWidth(4) << m_number << qSetFieldWidth(0) << " ";
     os << "BRANCH ";
 
-    if (m_dest == nullptr) {
-        os << "*no dest*";
-    }
-    else if (!m_dest->isIntConst()) {
+    if (!m_dest->isIntConst()) {
         os << m_dest;
     }
     else {
@@ -238,19 +215,13 @@ void BranchStatement::print(OStream &os) const
 }
 
 
-Statement *BranchStatement::clone() const
+SharedStmt BranchStatement::clone() const
 {
-    BranchStatement *ret = new BranchStatement();
+    std::shared_ptr<BranchStatement> ret(new BranchStatement(*this));
 
-    ret->m_dest       = m_dest->clone();
-    ret->m_isComputed = m_isComputed;
-    ret->m_jumpType   = m_jumpType;
-    ret->m_cond       = m_cond ? m_cond->clone() : nullptr;
-    ret->m_isFloat    = m_isFloat;
-    // Statement members
-    ret->m_bb     = m_bb;
-    ret->m_proc   = m_proc;
-    ret->m_number = m_number;
+    ret->m_dest = m_dest->clone();
+    ret->m_cond = m_cond ? m_cond->clone() : nullptr;
+
     return ret;
 }
 
@@ -274,14 +245,14 @@ void BranchStatement::simplify()
 bool BranchStatement::accept(StmtExpVisitor *v)
 {
     bool visitChildren = true;
-    bool ret           = v->visit(this, visitChildren);
+    bool ret           = v->visit(shared_from_this()->as<BranchStatement>(), visitChildren);
 
     if (!visitChildren) {
         return ret;
     }
 
     // Destination will always be a const for X86, so the below will never be used in practice
-    if (ret && m_dest) {
+    if (ret) {
         ret = m_dest->acceptVisitor(v->ev);
     }
 
@@ -296,10 +267,10 @@ bool BranchStatement::accept(StmtExpVisitor *v)
 bool BranchStatement::accept(StmtPartModifier *v)
 {
     bool visitChildren = true;
-    v->visit(this, visitChildren);
+    v->visit(shared_from_this()->as<BranchStatement>(), visitChildren);
 
-    if (m_dest && visitChildren) {
-        m_dest = m_dest->acceptModifier(v->mod);
+    if (visitChildren) {
+        setDest(m_dest->acceptModifier(v->mod));
     }
 
     if (m_cond && visitChildren) {
@@ -314,11 +285,11 @@ bool BranchStatement::accept(StmtModifier *v)
 {
     bool visitChildren;
 
-    v->visit(this, visitChildren);
+    v->visit(shared_from_this()->as<BranchStatement>(), visitChildren);
 
     if (v->m_mod) {
-        if (m_dest && visitChildren) {
-            m_dest = m_dest->acceptModifier(v->m_mod);
+        if (visitChildren) {
+            setDest(m_dest->acceptModifier(v->m_mod));
         }
 
         if (m_cond && visitChildren) {

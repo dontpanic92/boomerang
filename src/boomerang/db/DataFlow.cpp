@@ -11,7 +11,7 @@
 
 #include "boomerang/core/Project.h"
 #include "boomerang/core/Settings.h"
-#include "boomerang/db/BasicBlock.h"
+#include "boomerang/db/IRFragment.h"
 #include "boomerang/db/Prog.h"
 #include "boomerang/db/proc/ProcCFG.h"
 #include "boomerang/db/proc/UserProc.h"
@@ -40,9 +40,10 @@ DataFlow::~DataFlow()
 }
 
 
-void DataFlow::dfs(int myIdx, int parentIdx)
+void DataFlow::dfs(FragIndex myIdx, FragIndex parentIdx)
 {
-    if (m_dfnum[myIdx] != -1) {
+    assert(myIdx != INDEX_INVALID);
+    if (m_dfnum[myIdx] >= 0) {
         // already visited
         return;
     }
@@ -54,9 +55,9 @@ void DataFlow::dfs(int myIdx, int parentIdx)
     N++;
 
     // Recurse to successors
-    BasicBlock *bb = m_BBs[myIdx];
+    IRFragment *frag = m_frags[myIdx];
 
-    for (BasicBlock *succ : bb->getSuccessors()) {
+    for (IRFragment *succ : frag->getSuccessors()) {
         dfs(m_indices[succ], myIdx);
     }
 }
@@ -64,59 +65,57 @@ void DataFlow::dfs(int myIdx, int parentIdx)
 
 bool DataFlow::calculateDominators()
 {
-    ProcCFG *cfg        = m_proc->getCFG();
-    BasicBlock *entryBB = cfg->getEntryBB();
-    const int numBB     = cfg->getNumBBs();
+    ProcCFG *cfg               = m_proc->getCFG();
+    IRFragment *entryFrag      = cfg->getEntryFragment();
+    const std::size_t numFrags = cfg->getNumFragments();
 
-    if (!entryBB || numBB == 0) {
+    if (!entryFrag || numFrags == 0) {
         return false; // nothing to do
     }
 
-    N = 0;
     allocateData();
+    recalcSpanningTree();
 
-    // calculate spanning tree
-    dfs(0, -1);
     assert(N >= 1);
 
-    // Process BBs in reverse pre-traversal order (i.e. return blocks first)
-    for (int i = N - 1; i >= 1; i--) {
-        int n = m_vertex[i];
-        int p = m_parent[n];
-        int s = p;
+    // Process fragments in reverse pre-traversal order (i.e. return blocks first)
+    for (std::size_t i = N - 1; i >= 1; i--) {
+        FragIndex n = m_vertex[i];
+        FragIndex p = m_parent[n];
+        FragIndex s = p;
 
-        /* These lines calculate the semi-dominator of n, based on the Semidominator Theorem */
-        // for each predecessor v of n
-        for (BasicBlock *pred : m_BBs[n]->getPredecessors()) {
+        // These lines calculate the semi-dominator of n, based on the Semidominator Theorem
+        for (IRFragment *pred : m_frags[n]->getPredecessors()) {
             if (m_indices.find(pred) == m_indices.end()) {
-                LOG_ERROR("BB not in indices: ", pred->toString());
+                LOG_ERROR("Fragment not in indices: ", pred->toString());
                 return false;
             }
 
-            int v     = m_indices[pred];
-            int sdash = v;
+            const FragIndex v = m_indices[pred];
+            FragIndex sdash   = v;
 
-            if (m_dfnum[v] > m_dfnum[n]) {
+            if (isAncestorOf(v, n)) {
                 sdash = m_semi[getAncestorWithLowestSemi(v)];
             }
 
-            if (m_dfnum[sdash] < m_dfnum[s]) {
+            if (isAncestorOf(s, sdash)) {
                 s = sdash;
             }
         }
 
         m_semi[n] = s;
-        /* Calculation of n's dominator is deferred until the path from s to n has been linked
-         * intothe forest */
+
+        // Calculation of n's dominator is deferred until the path from s to n
+        // has been linked into the forest
         m_bucket[s].insert(n);
         link(p, n);
 
         // for each v in bucket[p]
-        for (int v : m_bucket[p]) {
-            /* Now that the path from p to v has been linked into the spanning forest,
-             * these lines calculate the dominator of v, based on the first clause of the Dominator
-             * Theorem,# or else defer the calculation until y's dominator is known. */
-            int y = getAncestorWithLowestSemi(v);
+        for (FragIndex v : m_bucket[p]) {
+            // Now that the path from p to v has been linked into the spanning forest,
+            // these lines calculate the dominator of v, based on the first clause of the
+            // Dominator Theorem, or else defer the calculation until y's dominator is known.
+            const FragIndex y = getAncestorWithLowestSemi(v);
 
             if (m_semi[y] == m_semi[v]) {
                 m_idom[v] = p; // Success!
@@ -129,34 +128,38 @@ bool DataFlow::calculateDominators()
         m_bucket[p].clear();
     }
 
-    for (int i = 1; i < N - 1; i++) {
-        /* Now all the deferred dominator calculations, based on the second clause of the Dominator
-         * Theorem, are performed. */
-        int n = m_vertex[i];
+    for (std::size_t i = 1; i < N - 1; i++) {
+        // Now all the deferred dominator calculations, based on the second clause of the Dominator
+        // Theorem, are performed.
+        FragIndex n = m_vertex[i];
 
-        if (m_samedom[n] != -1) {
+        if (m_samedom[n] != INDEX_INVALID) {
             m_idom[n] = m_idom[m_samedom[n]]; // Deferred success!
         }
     }
 
-    // the entry BB is always executed.
-    m_idom[0] = 0;
-    m_semi[0] = 0;
+    const FragIndex entryIndex = fragToIdx(entryFrag);
+    assert(entryIndex != INDEX_INVALID);
 
-    computeDF(0); // Finally, compute the dominance frontiers
+    // the entry fragment is always executed.
+    m_idom[entryIndex] = entryIndex;
+    m_semi[entryIndex] = entryIndex;
+
+    computeDF(entryIndex); // Finally, compute the dominance frontiers
     return true;
 }
 
 
-int DataFlow::getAncestorWithLowestSemi(int v)
+FragIndex DataFlow::getAncestorWithLowestSemi(FragIndex v)
 {
-    int a = m_ancestor[v];
+    assert(v != INDEX_INVALID);
 
-    if (m_ancestor[a] != -1) {
-        int b         = getAncestorWithLowestSemi(a);
-        m_ancestor[v] = m_ancestor[a];
+    const FragIndex a = m_ancestor[v];
+    if (a != INDEX_INVALID && m_ancestor[a] != INDEX_INVALID) {
+        const FragIndex b = getAncestorWithLowestSemi(a);
+        m_ancestor[v]     = m_ancestor[a];
 
-        if (m_dfnum[m_semi[b]] < m_dfnum[m_semi[m_best[v]]]) {
+        if (isAncestorOf(m_semi[m_best[v]], m_semi[b])) {
             m_best[v] = b;
         }
     }
@@ -165,16 +168,21 @@ int DataFlow::getAncestorWithLowestSemi(int v)
 }
 
 
-void DataFlow::link(int p, int n)
+void DataFlow::link(FragIndex p, FragIndex n)
 {
+    assert(n != INDEX_INVALID);
+
     m_ancestor[n] = p;
     m_best[n]     = n;
 }
 
 
-bool DataFlow::doesDominate(int n, int w)
+bool DataFlow::doesDominate(FragIndex n, FragIndex w)
 {
-    while (m_idom[w] != w) {
+    assert(n != INDEX_INVALID);
+    assert(w != INDEX_INVALID);
+
+    while (w != INDEX_INVALID && m_idom[w] != w) {
         if (m_idom[w] == n) {
             return true;
         }
@@ -186,15 +194,17 @@ bool DataFlow::doesDominate(int n, int w)
 }
 
 
-void DataFlow::computeDF(int n)
+void DataFlow::computeDF(FragIndex n)
 {
-    std::set<int> S;
+    assert(n != INDEX_INVALID);
+
+    std::set<FragIndex> S;
     // This loop computes DF_local[n]
     // for each node y in succ(n)
-    BasicBlock *bb = m_BBs[n];
+    IRFragment *frag = m_frags[n];
 
-    for (BasicBlock *b : bb->getSuccessors()) {
-        int y = m_indices[b];
+    for (IRFragment *succ : frag->getSuccessors()) {
+        FragIndex y = m_indices[succ];
 
         if (m_idom[y] != n) {
             S.insert(y);
@@ -203,22 +213,21 @@ void DataFlow::computeDF(int n)
 
     // for each child c of n in the dominator tree
     // Note: this is a linear search!
-    const int sz = m_idom.size(); // ? Was ancestor.size()
+    const size_t sz = m_idom.size(); // ? Was ancestor.size()
 
-    for (int c = 0; c < sz; ++c) {
+    for (FragIndex c = FragIndex(0); c < sz; ++c) {
         if (m_idom[c] != n) {
             continue;
         }
-        else if (c != n) { // do not calculate DF for entry BB again
+        else if (c != n) { // do not calculate DF for entry fragment again
             computeDF(c);
         }
 
         /* This loop computes DF_up[c] */
         // for each element w of DF[c]
-        std::set<int> &s = m_DF[c];
-        std::set<int>::iterator ww;
+        std::set<FragIndex> &s = m_DF[c];
 
-        for (int w : s) {
+        for (FragIndex w : s) {
             if (n == w || !doesDominate(n, w)) {
                 S.insert(w);
             }
@@ -292,31 +301,34 @@ bool DataFlow::placePhiFunctions()
     m_definedAt.clear(); // and A_orig,
     m_defStmts.clear();  // and the map from variable to defining Stmt
 
+    for (IRFragment *frag : *m_proc->getCFG()) {
+        frag->clearPhis();
+    }
 
     // Set the sizes of needed vectors
-    const int numIndices = m_indices.size();
-    const int numBB      = m_proc->getCFG()->getNumBBs();
-    assert(numIndices == numBB);
+    const std::size_t numIndices = m_indices.size();
+    const std::size_t numFrags   = m_proc->getCFG()->getNumFragments();
+    assert(numIndices == numFrags);
     Q_UNUSED(numIndices);
 
-    m_definedAt.resize(numBB);
+    m_definedAt.resize(numFrags);
 
     const bool assumeABICompliance = m_proc->getProg()->getProject()->getSettings()->assumeABI;
 
     // We need to create m_definedAt[n] for all n
     // Recreate each call because propagation and other changes make old data invalid
-    for (int n = 0; n < numBB; n++) {
-        BasicBlock::RTLIterator rit;
+    for (FragIndex n{ 0 }; n < numFrags; ++n) {
+        IRFragment::RTLIterator rit;
         StatementList::iterator sit;
-        BasicBlock *bb = m_BBs[n];
+        IRFragment *frag = m_frags[n];
 
-        for (Statement *stmt = bb->getFirstStmt(rit, sit); stmt; stmt = bb->getNextStmt(rit, sit)) {
+        for (SharedStmt stmt = frag->getFirstStmt(rit, sit); stmt;
+             stmt            = frag->getNextStmt(rit, sit)) {
             LocationSet locationSet;
             stmt->getDefinitions(locationSet, assumeABICompliance);
 
-            // If this is a childless call
-            if (stmt->isCall() && static_cast<const CallStatement *>(stmt)->isChildless()) {
-                // then this block defines every variable
+            // If this is a childless call, then this block defines every variable
+            if (stmt->isCall() && stmt->as<CallStatement>()->isChildless()) {
                 m_defallsites.insert(n);
             }
 
@@ -329,31 +341,33 @@ bool DataFlow::placePhiFunctions()
         }
     }
 
-    for (int n = 0; n < numBB; n++) {
+    for (FragIndex n{ 0 }; n < numFrags; ++n) {
         for (const SharedExp &a : m_definedAt[n]) {
             m_defsites[a].insert(n);
         }
     }
 
     bool change = false;
-    // For each variable a (in defsites, i.e. defined anywhere)
-    for (auto &val : m_defsites) {
-        SharedExp a = val.first;
 
-        // Those variables that are defined everywhere (i.e. in defallsites)
-        // need to be defined at every defsite, too
-        for (int da : m_defallsites) {
-            m_defsites[a].insert(da);
+    // Those variables that are defined everywhere (i.e. in defallsites)
+    // need to be defined at every defsite, too
+    for (FragIndex defallsite : m_defallsites) {
+        for (auto &[exp, defsites] : m_defsites) {
+            Q_UNUSED(exp);
+            defsites.insert(defallsite);
         }
+    }
 
-        std::set<int> W = m_defsites[a];
+    // For each variable a defined anywhere
+    for (auto &[a, defsites] : m_defsites) {
+        std::set<FragIndex> W = defsites;
 
         while (!W.empty()) {
             // Pop first node from W
-            const int n = *W.begin();
+            const FragIndex n = *W.begin();
             W.erase(W.begin());
 
-            for (int y : m_DF[n]) {
+            for (FragIndex y : m_DF[n]) {
                 // phi function already created for y?
                 if (m_A_phi[a].find(y) != m_A_phi[a].end()) {
                     continue;
@@ -361,7 +375,7 @@ bool DataFlow::placePhiFunctions()
 
                 // Insert trivial phi function for a at top of block y: a := phi()
                 change = true;
-                m_BBs[y]->addPhi(a->clone());
+                m_frags[y]->addPhi(a->clone());
 
                 // A_phi[a] <- A_phi[a] U {y}
                 m_A_phi[a].insert(y);
@@ -384,23 +398,21 @@ void DataFlow::convertImplicits()
     ProcCFG *cfg = m_proc->getCFG();
 
     // Convert statements in A_phi from m[...]{-} to m[...]{0}
-    std::map<SharedExp, std::set<int>, lessExpStar> A_phi_copy = m_A_phi; // Object copy
+    std::map<SharedExp, std::set<FragIndex>, lessExpStar> A_phi_copy = m_A_phi; // Object copy
     ImplicitConverter ic(cfg);
     m_A_phi.clear();
 
-    for (std::pair<SharedExp, std::set<int>> it : A_phi_copy) {
-        SharedExp e = it.first->clone();
-        e           = e->acceptModifier(&ic);
-        m_A_phi[e]  = it.second; // Copy the set (doesn't have to be deep)
+    for (auto &[exp, set] : A_phi_copy) {
+        SharedExp e = exp->clone()->acceptModifier(&ic);
+        m_A_phi[e]  = set; // Copy the set (doesn't have to be deep)
     }
 
-    std::map<SharedExp, std::set<int>, lessExpStar> defsites_copy = m_defsites; // Object copy
+    std::map<SharedExp, std::set<FragIndex>, lessExpStar> defsites_copy = m_defsites; // Object copy
     m_defsites.clear();
 
-    for (std::pair<SharedExp, std::set<int>> dd : defsites_copy) {
-        SharedExp e   = dd.first->clone();
-        e             = e->acceptModifier(&ic);
-        m_defsites[e] = dd.second; // Copy the set (doesn't have to be deep)
+    for (auto &[exp, set] : defsites_copy) {
+        SharedExp e   = exp->clone()->acceptModifier(&ic);
+        m_defsites[e] = set; // Copy the set (doesn't have to be deep)
     }
 
     std::vector<ExSet> definedAtCopy = m_definedAt;
@@ -420,122 +432,58 @@ void DataFlow::convertImplicits()
 }
 
 
-void DataFlow::findLiveAtDomPhi(LocationSet &usedByDomPhi, LocationSet &usedByDomPhi0,
-                                std::map<SharedExp, PhiAssign *, lessExpStar> &defdByPhi)
-{
-    return findLiveAtDomPhi(0, usedByDomPhi, usedByDomPhi0, defdByPhi);
-}
-
-
-void DataFlow::findLiveAtDomPhi(int n, LocationSet &usedByDomPhi, LocationSet &usedByDomPhi0,
-                                std::map<SharedExp, PhiAssign *, lessExpStar> &defdByPhi)
-{
-    if (m_BBs.empty()) {
-        return;
-    }
-
-    // For each statement this BB
-    BasicBlock::RTLIterator rit;
-    StatementList::iterator sit;
-    BasicBlock *bb                 = m_BBs[n];
-    const bool assumeABICompliance = m_proc->getProg()->getProject()->getSettings()->assumeABI;
-
-    for (Statement *S = bb->getFirstStmt(rit, sit); S; S = bb->getNextStmt(rit, sit)) {
-        if (S->isPhi()) {
-            // For each phi parameter, insert an entry into usedByDomPhi0
-            PhiAssign *pa = static_cast<PhiAssign *>(S);
-
-            for (RefExp &exp : *pa) {
-                if (exp.getSubExp1()) {
-                    auto re = RefExp::get(exp.getSubExp1(), exp.getDef());
-                    usedByDomPhi0.insert(re);
-                }
-            }
-
-            // Insert an entry into the defdByPhi map
-            auto wrappedLhs       = RefExp::get(pa->getLeft(), pa);
-            defdByPhi[wrappedLhs] = pa;
-            // Fall through to the below, because phi uses are also legitimate uses
-        }
-
-        LocationSet ls;
-        S->addUsedLocs(ls);
-
-        // Consider uses of this statement
-        for (const SharedExp &it : ls) {
-            // Remove this entry from the map, since it is not unused
-            defdByPhi.erase(it);
-        }
-
-        // Now process any definitions
-        ls.clear();
-        S->getDefinitions(ls, assumeABICompliance);
-
-        for (const SharedExp &it : ls) {
-            auto wrappedDef(RefExp::get(it, S));
-
-            // If this definition is in the usedByDomPhi0 set,
-            // then it is in fact dominated by a phi use, so move it to
-            // the final usedByDomPhi set
-            if (usedByDomPhi0.contains(wrappedDef)) {
-                usedByDomPhi0.remove(wrappedDef);
-                usedByDomPhi.insert(RefExp::get(it, S));
-            }
-        }
-    }
-
-    // Visit each child in the dominator graph
-    // Note: this is a linear search!
-    // Note also that usedByDomPhi0 may have some irrelevant entries, but this will do no harm, and
-    // attempting to erase the irrelevant ones would probably cost more than leaving them alone
-    const int sz = m_idom.size();
-
-    for (int c = 0; c < sz; ++c) {
-        if (m_idom[c] != n || n == c) {
-            continue;
-        }
-
-        // Recurse to the child
-        findLiveAtDomPhi(c, usedByDomPhi, usedByDomPhi0, defdByPhi);
-    }
-}
-
-
 void DataFlow::allocateData()
 {
-    ProcCFG *cfg     = m_proc->getCFG();
-    const int numBBs = cfg->getNumBBs();
+    ProcCFG *cfg               = m_proc->getCFG();
+    const std::size_t numFrags = cfg->getNumFragments();
 
-    m_BBs.assign(numBBs, nullptr);
+    m_frags.assign(numFrags, nullptr);
     m_indices.clear();
 
-    m_dfnum.assign(numBBs, -1);
-    m_semi.assign(numBBs, -1);
-    m_ancestor.assign(numBBs, -1);
-    m_idom.assign(numBBs, -1);
-    m_samedom.assign(numBBs, -1);
-    m_vertex.assign(numBBs, -1);
-    m_parent.assign(numBBs, -1);
-    m_best.assign(numBBs, -1);
-    m_bucket.resize(numBBs);
-    m_definedAt.resize(numBBs);
-    m_DF.resize(numBBs);
+    m_dfnum.assign(numFrags, -1);
+    m_semi.assign(numFrags, INDEX_INVALID);
+    m_ancestor.assign(numFrags, INDEX_INVALID);
+    m_idom.assign(numFrags, INDEX_INVALID);
+    m_samedom.assign(numFrags, INDEX_INVALID);
+    m_vertex.assign(numFrags, INDEX_INVALID);
+    m_parent.assign(numFrags, INDEX_INVALID);
+    m_best.assign(numFrags, INDEX_INVALID);
+    m_bucket.assign(numFrags, {});
+    m_DF.assign(numFrags, {});
+    m_definedAt.assign(numFrags, {});
 
     m_A_phi.clear();
     m_defsites.clear();
     m_defallsites.clear();
     m_defStmts.clear();
 
-
-    // Set up the BBs and indices vectors. Do this here
-    // because sometimes a BB can be unreachable
+    // Set up the fragment and indices vectors.
+    // Do this here because sometimes a fragment can be unreachable
     // (so relying on in-edges doesn't work)
-    int i = 0;
-    for (BasicBlock *bb : *cfg) {
-        m_BBs[i++] = bb;
+    std::size_t i = 0;
+    for (IRFragment *frag : *cfg) {
+        m_frags[i++] = frag;
     }
 
-    for (int j = 0; j < numBBs; j++) {
-        m_indices[m_BBs[j]] = j;
+    for (std::size_t j = 0; j < numFrags; j++) {
+        m_indices[m_frags[j]] = j;
     }
+}
+
+
+void DataFlow::recalcSpanningTree()
+{
+    IRFragment *entryFrag = m_proc->getEntryFragment();
+    assert(entryFrag != nullptr);
+    const FragIndex entryIndex = fragToIdx(entryFrag);
+    assert(entryIndex != INDEX_INVALID);
+
+    N = 0;
+    dfs(entryIndex, INDEX_INVALID);
+}
+
+
+bool DataFlow::isAncestorOf(FragIndex n, FragIndex parent) const
+{
+    return m_dfnum[parent] < m_dfnum[n];
 }

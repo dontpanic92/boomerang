@@ -23,11 +23,12 @@ DuplicateArgsRemovalPass::DuplicateArgsRemovalPass()
 
 bool DuplicateArgsRemovalPass::execute(UserProc *proc)
 {
-    BasicBlock::RTLRIterator rrit;
+    IRFragment::RTLRIterator rrit;
     StatementList::reverse_iterator srit;
 
-    for (BasicBlock *bb : *proc->getCFG()) {
-        CallStatement *c = dynamic_cast<CallStatement *>(bb->getLastStmt(rrit, srit));
+    for (IRFragment *frag : *proc->getCFG()) {
+        std::shared_ptr<CallStatement> c = std::dynamic_pointer_cast<CallStatement>(
+            frag->getLastStmt(rrit, srit));
 
         // Note: we may have removed some statements, so there may no longer be a last statement!
         if (c == nullptr) {

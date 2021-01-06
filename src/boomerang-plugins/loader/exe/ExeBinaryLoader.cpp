@@ -20,6 +20,7 @@
 #include <QFile>
 
 #include <cassert>
+#include <stdexcept>
 
 
 #define DOS_PAGE_SIZE (512)
@@ -183,8 +184,8 @@ bool ExeBinaryLoader::applyRelocations(QBuffer &fp, QByteArray &data, Address lo
             return false;
         }
 
-        relocEntry.offset  = Util::readWord(&relocEntry, Endian::Little);
-        relocEntry.segment = Util::readWord(&relocEntry + sizeof(SWord), Endian::Little);
+        relocEntry.offset  = Util::normEndian(relocEntry.offset, Endian::Little);
+        relocEntry.segment = Util::normEndian(relocEntry.segment, Endian::Little);
 
         const SWord imageOffset = (relocEntry.segment << 4) + relocEntry.offset;
         if (!Util::inRange(imageOffset, 0, m_imageSize)) {
@@ -228,7 +229,7 @@ LoadFmt ExeBinaryLoader::getFormat() const
 
 Machine ExeBinaryLoader::getMachine() const
 {
-    return Machine::PENTIUM;
+    return Machine::X86;
 }
 
 

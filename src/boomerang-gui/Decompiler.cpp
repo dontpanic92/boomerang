@@ -75,8 +75,7 @@ void Decompiler::loadInputFile(const QString &inputFile, const QString &outputPa
     }
 
     switch (m_project.getLoadedBinaryFile()->getMachine()) {
-    case Machine::PENTIUM: emit machineTypeChanged("pentium"); break;
-    case Machine::SPARC: emit machineTypeChanged("sparc"); break;
+    case Machine::X86: emit machineTypeChanged("x86"); break;
     case Machine::PPC: emit machineTypeChanged("ppc"); break;
     case Machine::ST20: emit machineTypeChanged("st20"); break;
     case Machine::UNKNOWN:
@@ -230,10 +229,11 @@ bool Decompiler::getRTLForProc(const QString &name, QString &rtl)
 {
     Function *p = m_project.getProg()->getFunctionByName(name);
 
-    if (p->isLib()) {
+    if (!p || p->isLib()) {
         return false;
     }
 
+    assert(dynamic_cast<UserProc *>(p) != nullptr);
     UserProc *up = static_cast<UserProc *>(p);
     OStream os(&rtl);
     up->print(os);

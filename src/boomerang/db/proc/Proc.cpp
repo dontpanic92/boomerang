@@ -103,6 +103,13 @@ void Function::removeFromModule()
 }
 
 
+void Function::setSignature(std::shared_ptr<Signature> sig)
+{
+    m_signature = sig;
+    assert(m_signature != nullptr);
+}
+
+
 void Function::removeParameterFromSignature(SharedExp e)
 {
     const int n = m_signature->findParam(e);
@@ -110,7 +117,7 @@ void Function::removeParameterFromSignature(SharedExp e)
     if (n != -1) {
         m_signature->removeParameter(n);
 
-        for (CallStatement *caller : m_callers) {
+        for (const std::shared_ptr<CallStatement> &caller : m_callers) {
             if (m_prog && m_prog->getProject()->getSettings()->debugUnused) {
                 LOG_MSG("Removing argument %1 in pos %2 from %3", e, n, caller);
             }

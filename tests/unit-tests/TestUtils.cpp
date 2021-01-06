@@ -13,6 +13,7 @@
 #include "boomerang/core/Settings.h"
 #include "boomerang/util/LocationSet.h"
 #include "boomerang/util/log/Log.h"
+#include "boomerang/ssl/type/VoidType.h"
 
 
 TestProject::TestProject()
@@ -61,9 +62,21 @@ char *toString(const SharedConstExp& exp)
 }
 
 
+char *toString(const SharedConstStmt &stmt)
+{
+    return QTest::toString(stmt->toString());
+}
+
+
 char *toString(const Exp& exp)
 {
     return QTest::toString(exp.toString());
+}
+
+
+char *toString(const Type& ty)
+{
+    return QTest::toString(ty.toString());
 }
 
 
@@ -74,4 +87,76 @@ char *toString(const LocationSet& locSet)
     locSet.print(os);
 
     return QTest::toString(tgt);
+}
+
+
+char *toString(const std::list<SharedExp> &list)
+{
+    QString result = "{ ";
+
+    for (const SharedExp &elem : list) {
+        result += elem->toString() + " ";
+    }
+
+    result += "}";
+    return QTest::toString(result);
+}
+
+
+#define HANDLE_ENUM_VAL(x) case x: return QTest::toString(#x)
+
+
+char *toString(BBType type)
+{
+    switch (type) {
+    HANDLE_ENUM_VAL(BBType::Invalid);
+    HANDLE_ENUM_VAL(BBType::Fall);
+    HANDLE_ENUM_VAL(BBType::Oneway);
+    HANDLE_ENUM_VAL(BBType::Twoway);
+    HANDLE_ENUM_VAL(BBType::Nway);
+    HANDLE_ENUM_VAL(BBType::Ret);
+    HANDLE_ENUM_VAL(BBType::Call);
+    HANDLE_ENUM_VAL(BBType::CompJump);
+    HANDLE_ENUM_VAL(BBType::CompCall);
+    }
+
+    return QTest::toString("<unknown>");
+}
+
+
+char *toString(Address addr)
+{
+    return QTest::toString(addr.toString());
+}
+
+
+std::vector<MachineInstruction> createInsns(Address baseAddr, std::size_t count)
+{
+    std::vector<MachineInstruction> result{ count };
+
+    for (std::size_t i=0; i<count; ++i) {
+        result[i].m_addr = baseAddr + i;
+        result[i].m_size = 1;
+    }
+
+    return result;
+}
+
+
+std::unique_ptr<RTLList> createRTLs(Address baseAddr, std::size_t numRTLs, std::size_t numStmtsPerRTL)
+{
+    std::unique_ptr<RTLList> rtls(new RTLList);
+
+    for (std::size_t i = 0; i < numRTLs; i++) {
+        auto rtl = std::unique_ptr<RTL>(new RTL(baseAddr + i));
+
+        for (std::size_t j = 0; j < numStmtsPerRTL; ++j) {
+            auto stmt = std::make_shared<Assign>(VoidType::get(), Terminal::get(opNil), Terminal::get(opNil));
+            rtl->append(stmt);
+        }
+
+        rtls->push_back(std::move(rtl));
+    }
+
+    return rtls;
 }

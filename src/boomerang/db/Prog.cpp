@@ -13,6 +13,7 @@
 #include "boomerang/core/Settings.h"
 #include "boomerang/db/DebugInfo.h"
 #include "boomerang/db/Global.h"
+#include "boomerang/db/LowLevelCFG.h"
 #include "boomerang/db/binary/BinaryFile.h"
 #include "boomerang/db/binary/BinaryImage.h"
 #include "boomerang/db/binary/BinarySection.h"
@@ -54,6 +55,7 @@ Prog::Prog(const QString &name, Project *project)
     , m_project(project)
     , m_binaryFile(project ? project->getLoadedBinaryFile() : nullptr)
     , m_fe(nullptr)
+    , m_cfg(new LowLevelCFG)
 {
     m_rootModule = getOrInsertModule(getName());
     assert(m_rootModule != nullptr);
@@ -320,12 +322,20 @@ bool Prog::isWin32() const
 
 QString Prog::getRegNameByNum(RegNum regNum) const
 {
+    if (!m_fe || !m_fe->getDecoder()) {
+        return "";
+    }
+
     return m_fe->getDecoder()->getRegNameByNum(regNum);
 }
 
 
 int Prog::getRegSizeByNum(RegNum regNum) const
 {
+    if (!m_fe || !m_fe->getDecoder()) {
+        return 0;
+    }
+
     return m_fe->getDecoder()->getRegSizeByNum(regNum);
 }
 
@@ -352,8 +362,7 @@ void Prog::readDefaultLibraryCatalogues()
 
     QString libCatalogName;
     switch (getMachine()) {
-    case Machine::PENTIUM: libCatalogName = "signatures/pentium.hs"; break;
-    case Machine::SPARC: libCatalogName = "signatures/sparc.hs"; break;
+    case Machine::X86: libCatalogName = "signatures/x86.hs"; break;
     case Machine::PPC: libCatalogName = "signatures/ppc.hs"; break;
     case Machine::ST20: libCatalogName = "signatures/st20.hs"; break;
     default: libCatalogName = ""; break;
@@ -482,7 +491,7 @@ bool Prog::getFloatConstant(Address addr, double &value, int bits) const
         assert(bits == 32);
         float val;
         if (m_binaryFile->getImage()->readNativeFloat4(addr, val)) {
-            value = val;
+            value = static_cast<double>(val);
             return true;
         }
         else {
@@ -529,9 +538,13 @@ bool Prog::isReadOnly(Address a) const
 
 bool Prog::isInStringsSection(Address a) const
 {
+    if (!m_binaryFile || !m_binaryFile->getImage()) {
+        return false;
+    }
+
     const BinarySection *si = static_cast<const BinarySection *>(
         m_binaryFile->getImage()->getSectionByAddr(a));
-    return si && si->isAttributeInRange("StringsSection", a, a + 1);
+    return si && si->addressHasAttribute("StringsSection", a);
 }
 
 
@@ -539,14 +552,6 @@ bool Prog::isDynamicallyLinkedProcPointer(Address dest) const
 {
     const BinarySymbol *sym = m_binaryFile->getSymbols()->findSymbolByAddress(dest);
     return sym && sym->isImportedFunction();
-}
-
-
-const QString &Prog::getDynamicProcName(Address addr) const
-{
-    static const QString defaultName("");
-    const BinarySymbol *sym = m_binaryFile->getSymbols()->findSymbolByAddress(addr);
-    return (sym && sym->isImportedFunction()) ? sym->getName() : defaultName;
 }
 
 
@@ -581,12 +586,6 @@ Module *Prog::getOrInsertModuleForSymbol(const QString &symbolName)
 }
 
 
-int Prog::readNative4(Address a) const
-{
-    return m_binaryFile->getImage()->readNative4(a);
-}
-
-
 void Prog::updateLibrarySignatures()
 {
     for (const auto &m : m_moduleList) {
@@ -606,7 +605,10 @@ bool Prog::decodeEntryPoint(Address entryAddr)
             return false;
         }
 
-        m_fe->decodeRecursive(entryAddr);
+        if (!m_fe->disassembleFunctionAtAddr(entryAddr)) {
+            LOG_WARN("Cannot disassemble function at entry address %1", entryAddr);
+            return false;
+        }
     }
 
     if (!func) {
@@ -638,7 +640,7 @@ bool Prog::decodeFragment(UserProc *proc, Address a)
 {
     if ((a >= m_binaryFile->getImage()->getLimitTextLow()) &&
         (a < m_binaryFile->getImage()->getLimitTextHigh())) {
-        return m_fe->decodeFragment(proc, a);
+        return m_fe->disassembleProc(proc, a);
     }
     else {
         LOG_ERROR("Attempt to decode fragment at address %1 outside text area", a);
@@ -649,11 +651,11 @@ bool Prog::decodeFragment(UserProc *proc, Address a)
 
 bool Prog::reDecode(UserProc *proc)
 {
-    if (!proc) {
+    if (!proc || !m_fe) {
         return false;
     }
 
-    return m_fe->processProc(proc, proc->getEntryAddress());
+    return m_fe->disassembleProc(proc, proc->getEntryAddress());
 }
 
 

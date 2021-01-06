@@ -57,7 +57,7 @@ public:
 class ObjcAccessInterface
 {
 public:
-    virtual ~ObjcAccessInterface() {}
+    virtual ~ObjcAccessInterface() { }
 
     virtual std::map<QString, ObjcModule> &getObjcModules() = 0;
 };
@@ -68,7 +68,7 @@ class BOOMERANG_PLUGIN_API MachOBinaryLoader : public IFileLoader, public ObjcAc
 {
 public:
     MachOBinaryLoader(Project *project);
-    virtual ~MachOBinaryLoader() override;
+    ~MachOBinaryLoader() override;
 
 public:
     /// \copydoc IFileLoader::initialize

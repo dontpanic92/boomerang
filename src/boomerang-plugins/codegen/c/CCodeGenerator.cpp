@@ -11,7 +11,7 @@
 
 #include "boomerang/core/Project.h"
 #include "boomerang/core/Settings.h"
-#include "boomerang/db/BasicBlock.h"
+#include "boomerang/db/IRFragment.h"
 #include "boomerang/db/Prog.h"
 #include "boomerang/db/module/Module.h"
 #include "boomerang/db/proc/UserProc.h"
@@ -35,6 +35,15 @@
 #include "boomerang/ssl/type/PointerType.h"
 #include "boomerang/util/ByteUtil.h"
 #include "boomerang/util/log/Log.h"
+
+#include <stdexcept>
+
+
+// index of the "then" branch of conditional jumps
+#define BTHEN 0
+
+// index of the "else" branch of conditional jumps
+#define BELSE 1
 
 
 CCodeGenerator::CCodeGenerator(Project *project)
@@ -109,7 +118,7 @@ void CCodeGenerator::generateCode(const Prog *prog, Module *cluster, UserProc *p
 }
 
 
-void CCodeGenerator::addAssignmentStatement(const Assign *asgn)
+void CCodeGenerator::addAssignmentStatement(const std::shared_ptr<const Assign> &asgn)
 {
     // Gerard: shouldn't these  3 types of statements be removed earlier?
     if (asgn->getLeft()->isPC()) {
@@ -139,22 +148,22 @@ void CCodeGenerator::addAssignmentStatement(const Assign *asgn)
     }
 
     if (lhs->isMemOf() && asgnType && !asgnType->isVoid()) {
-        appendExp(ost, TypedExp(asgnType, lhs), OpPrec::Assign);
+        appendExp(ost, TypedExp::get(asgnType, lhs), OpPrec::Assign);
     }
     else if (lhs->isGlobal() && asgn->getType()->isArray()) {
-        appendExp(ost, Binary(opArrayIndex, lhs, Const::get(0)), OpPrec::Assign);
+        appendExp(ost, Binary::get(opArrayIndex, lhs, Const::get(0)), OpPrec::Assign);
     }
     else if ((lhs->getOper() == opAt) && lhs->getSubExp2()->isIntConst() &&
              lhs->getSubExp3()->isIntConst()) {
         // exp1@[n:m] := rhs -> exp1 = exp1 & mask | rhs << m  where mask = ~((1 << m-n+1)-1)
         SharedExp exp1 = lhs->getSubExp1();
-        int n          = lhs->access<Const, 2>()->getInt();
-        int m          = lhs->access<Const, 3>()->getInt();
-        appendExp(ost, *exp1, OpPrec::Assign);
+        const int n    = lhs->access<Const, 2>()->getInt();
+        const int m    = lhs->access<Const, 3>()->getInt();
+        appendExp(ost, exp1, OpPrec::Assign);
         ost << " = ";
 
         // MSVC winges without most of these parentheses
-        int mask = ~(((1 << (m - n + 1)) - 1) << m);
+        const int mask = ~(((1 << (m - n + 1)) - 1) << m);
 
         // clang-format off
         rhs = Binary::get(opBitAnd,
@@ -165,13 +174,13 @@ void CCodeGenerator::addAssignmentStatement(const Assign *asgn)
         // clang-format on
         rhs = rhs->simplify();
 
-        appendExp(ost, *rhs, OpPrec::Assign);
+        appendExp(ost, rhs, OpPrec::Assign);
         ost << ";";
         appendLine(tgt);
         return;
     }
     else {
-        appendExp(ost, *lhs, OpPrec::Assign); // Ordinary LHS
+        appendExp(ost, lhs, OpPrec::Assign); // Ordinary LHS
     }
 
     // C has special syntax for this, eg += and ++
@@ -189,8 +198,10 @@ void CCodeGenerator::addAssignmentStatement(const Assign *asgn)
                 useIncrement = true;
             }
             else if (asgn->getType()->isPointer()) {
-                // add ptr, 4 for 32 bit pointers in assembly is ptr++ in C code
-                const Type::Size ptrSize = asgn->getType()->as<PointerType>()->getSize();
+                // add ptr, 4 in assembly for pointers to 32 bit data is ptr++ in C code
+                const Type::Size
+                    ptrSize = asgn->getType()->as<PointerType>()->getPointsTo()->getSize();
+
                 if (ptrSize == (Type::Size)rhs->access<const Const, 2>()->getInt() * 8) {
                     useIncrement = true;
                 }
@@ -214,12 +225,12 @@ void CCodeGenerator::addAssignmentStatement(const Assign *asgn)
             ost << " -= ";
         }
 
-        appendExp(ost, *rhs->getSubExp2(), OpPrec::Assign);
+        appendExp(ost, rhs->getSubExp2(), OpPrec::Assign);
         ost << ";";
     }
     else {
         ost << " = ";
-        appendExp(ost, *rhs, OpPrec::Assign);
+        appendExp(ost, rhs, OpPrec::Assign);
         ost << ";";
     }
 
@@ -237,8 +248,8 @@ void CCodeGenerator::addCallStatement(const Function *proc, const QString &name,
 
     if (!results.empty()) {
         // FIXME: Needs changing if more than one real result (return a struct)
-        SharedConstExp firstRet = (static_cast<const Assignment *>(*results.begin()))->getLeft();
-        appendExp(s, *firstRet, OpPrec::Assign);
+        SharedConstExp firstRet = (*results.begin())->as<const Assignment>()->getLeft();
+        appendExp(s, firstRet, OpPrec::Assign);
         s << " = ";
     }
 
@@ -254,12 +265,12 @@ void CCodeGenerator::addCallStatement(const Function *proc, const QString &name,
             s << ", ";
         }
 
-        assert((*ss)->isAssignment() && dynamic_cast<Assignment *>(*ss) != nullptr);
+        assert((*ss)->isAssignment());
 
-        Assignment *arg_assign = static_cast<Assignment *>(*ss);
-        SharedType t           = arg_assign->getType();
-        SharedExp as_arg       = arg_assign->getRight();
-        bool ok                = true;
+        std::shared_ptr<Assignment> arg_assign = (*ss)->as<Assignment>();
+        SharedType t                           = arg_assign->getType();
+        SharedExp as_arg                       = arg_assign->getRight();
+        bool ok                                = true;
 
         if (as_arg->isIntConst() && t && t->isPointer() &&
             t->as<PointerType>()->getPointsTo()->isFunc()) {
@@ -272,7 +283,7 @@ void CCodeGenerator::addCallStatement(const Function *proc, const QString &name,
         }
 
         if (ok) {
-            appendExp(s, *as_arg, OpPrec::Comma);
+            appendExp(s, as_arg, OpPrec::Comma);
         }
     }
 
@@ -290,9 +301,8 @@ void CCodeGenerator::addCallStatement(const Function *proc, const QString &name,
                 s << ", ";
             }
 
-            const Assignment *assign = dynamic_cast<const Assignment *>(*ss);
-            assert(assign != nullptr);
-            appendExp(s, *assign->getLeft(), OpPrec::Comma);
+            std::shared_ptr<const Assignment> assign = (*ss)->as<const Assignment>();
+            appendExp(s, assign->getLeft(), OpPrec::Comma);
         }
 
         s << " */";
@@ -311,15 +321,15 @@ void CCodeGenerator::addIndCallStatement(const SharedExp &exp, const StatementLi
     OStream s(&tgt);
     indent(s, m_indent);
     s << "(*";
-    appendExp(s, *exp, OpPrec::None);
+    appendExp(s, exp, OpPrec::None);
     s << ")(";
     QStringList arg_strings;
     QString arg_tgt;
 
-    for (Statement *ss : args) {
+    for (SharedStmt ss : args) {
         OStream arg_str(&arg_tgt);
-        SharedExp arg = static_cast<Assign *>(ss)->getRight();
-        appendExp(arg_str, *arg, OpPrec::Comma);
+        SharedExp arg = ss->as<Assign>()->getRight();
+        appendExp(arg_str, arg, OpPrec::Comma);
         arg_strings << arg_tgt;
         arg_tgt.clear();
     }
@@ -342,7 +352,7 @@ void CCodeGenerator::addReturnStatement(const StatementList *rets)
 
     if (n >= 1) {
         ost << " ";
-        appendExp(ost, *static_cast<Assign *>(*rets->begin())->getRight(), OpPrec::None);
+        appendExp(ost, (*rets->begin())->as<Assign>()->getRight(), OpPrec::None);
     }
 
     ost << ";";
@@ -363,9 +373,9 @@ void CCodeGenerator::addReturnStatement(const StatementList *rets)
                 ost << ", ";
             }
 
-            appendExp(ost, *(static_cast<Assign *>(*retIt))->getLeft(), OpPrec::None);
+            appendExp(ost, (*retIt)->as<Assign>()->getLeft(), OpPrec::None);
             ost << " := ";
-            appendExp(ost, *(static_cast<Assign *>(*retIt))->getRight(), OpPrec::None);
+            appendExp(ost, (*retIt)->as<Assign>()->getRight(), OpPrec::None);
         }
 
         if (n > 1) {
@@ -409,7 +419,7 @@ void CCodeGenerator::generateCode(UserProc *proc)
     m_lines.clear();
     m_proc = proc;
 
-    if (!proc->getCFG() || !proc->getEntryBB()) {
+    if (!proc->getCFG() || !proc->getEntryFragment()) {
         return;
     }
 
@@ -444,8 +454,8 @@ void CCodeGenerator::generateCode(UserProc *proc)
     }
 
     // Start generating "real" code
-    std::list<const BasicBlock *> followSet, gotoSet;
-    generateCode(proc->getEntryBB(), nullptr, followSet, gotoSet, proc);
+    std::list<const IRFragment *> followSet, gotoSet;
+    generateCode(proc->getEntryFragment(), nullptr, followSet, gotoSet, proc);
 
     addProcEnd();
 
@@ -467,9 +477,12 @@ void CCodeGenerator::generateDataSectionCode(const BinaryImage *image, QString s
     auto l = Terminal::get(opNil);
 
     for (unsigned int i = 0; i < size; i++) {
-        int n = image->readNative1(section_start + size - 1 - i);
+        Byte value = 0;
+        if (!image->readNative1(section_start + size - 1 - i, value)) {
+            break;
+        }
 
-        l = Binary::get(opList, Const::get(n & 0xFF), l);
+        l = Binary::get(opList, Const::get(value & 0xFF), l);
     }
 
     addGlobal(section_name, ArrayType::get(IntegerType::get(8, Sign::Unsigned), size), l);
@@ -480,7 +493,7 @@ void CCodeGenerator::addFunctionSignature(UserProc *proc, bool open)
 {
     QString tgt;
     OStream s(&tgt);
-    ReturnStatement *returns = proc->getRetStmt();
+    std::shared_ptr<ReturnStatement> returns = proc->getRetStmt();
     SharedType retType;
 
     if (proc->getSignature()->isForced()) {
@@ -508,8 +521,8 @@ void CCodeGenerator::addFunctionSignature(UserProc *proc, bool open)
         s << "void ";
     }
     else {
-        Assign *firstRet = static_cast<Assign *>(*returns->begin());
-        retType          = firstRet->getType();
+        std::shared_ptr<Assign> firstRet = (*returns->begin())->as<Assign>();
+        retType                          = firstRet->getType();
 
         if ((retType == nullptr) || retType->isVoid()) {
             // There is a real return; make it integer (Remove with AD HOC type analysis)
@@ -542,9 +555,9 @@ void CCodeGenerator::addFunctionSignature(UserProc *proc, bool open)
             s << ", ";
         }
 
-        Assignment *as = static_cast<Assignment *>(parameter);
-        SharedExp left = as->getLeft();
-        SharedType ty  = as->getType();
+        std::shared_ptr<Assignment> as = parameter->as<Assignment>();
+        SharedExp left                 = as->getLeft();
+        SharedType ty                  = as->getType();
 
         if (ty == nullptr) {
             if (proc->getProg()->getProject()->getSettings()->verboseOutput) {
@@ -599,7 +612,7 @@ void CCodeGenerator::addPretestedLoopHeader(const SharedExp &cond)
 
     indent(s, m_indent);
     s << "while (";
-    appendExp(s, *cond, OpPrec::None);
+    appendExp(s, cond, OpPrec::None);
     s << ") {";
     appendLine(tgt);
 
@@ -657,7 +670,7 @@ void CCodeGenerator::addPostTestedLoopHeader()
 }
 
 
-void CCodeGenerator::addPostTestedLoopEnd(const SharedExp &cond)
+void CCodeGenerator::addPostTestedLoopEnd(const SharedConstExp &cond)
 {
     m_indent--;
 
@@ -666,20 +679,20 @@ void CCodeGenerator::addPostTestedLoopEnd(const SharedExp &cond)
 
     indent(s, m_indent);
     s << "} while (";
-    appendExp(s, *cond, OpPrec::None);
+    appendExp(s, cond, OpPrec::None);
     s << ");";
     appendLine(tgt);
 }
 
 
-void CCodeGenerator::addCaseCondHeader(const SharedExp &cond)
+void CCodeGenerator::addCaseCondHeader(const SharedConstExp &cond)
 {
     QString tgt;
     OStream s(&tgt);
 
     indent(s, m_indent);
     s << "switch(";
-    appendExp(s, *cond, OpPrec::None);
+    appendExp(s, cond, OpPrec::None);
     s << ") {";
     appendLine(tgt);
 
@@ -687,7 +700,7 @@ void CCodeGenerator::addCaseCondHeader(const SharedExp &cond)
 }
 
 
-void CCodeGenerator::addCaseCondOption(Exp &opt)
+void CCodeGenerator::addCaseCondOption(const SharedConstExp &opt)
 {
     m_indent--;
 
@@ -742,14 +755,14 @@ void CCodeGenerator::addCaseCondEnd()
 }
 
 
-void CCodeGenerator::addIfCondHeader(const SharedExp &cond)
+void CCodeGenerator::addIfCondHeader(const SharedConstExp &cond)
 {
     QString tgt;
     OStream s(&tgt);
 
     indent(s, m_indent);
     s << "if (";
-    appendExp(s, *cond, OpPrec::None);
+    appendExp(s, cond, OpPrec::None);
     s << ") {";
     appendLine(tgt);
 
@@ -770,14 +783,14 @@ void CCodeGenerator::addIfCondEnd()
 }
 
 
-void CCodeGenerator::addIfElseCondHeader(const SharedExp &cond)
+void CCodeGenerator::addIfElseCondHeader(const SharedConstExp &cond)
 {
     QString tgt;
     OStream s(&tgt);
 
     indent(s, m_indent);
     s << "if (";
-    appendExp(s, *cond, OpPrec::None);
+    appendExp(s, cond, OpPrec::None);
     s << ") {";
     appendLine(tgt);
 
@@ -818,15 +831,15 @@ void CCodeGenerator::addIfElseCondEnd()
 }
 
 
-void CCodeGenerator::addGoto(const BasicBlock *bb)
+void CCodeGenerator::addGoto(const IRFragment *frag)
 {
     QString tgt;
     OStream s(&tgt);
 
     indent(s, m_indent);
-    s << "goto bb0x" << QString::number(bb->getLowAddr().value(), 16) << ";";
+    s << "goto bb0x" << QString::number(frag->getLowAddr().value(), 16) << ";";
     appendLine(tgt);
-    m_usedLabels.insert(bb->getLowAddr().value());
+    m_usedLabels.insert(frag->getLowAddr().value());
 }
 
 
@@ -852,12 +865,12 @@ void CCodeGenerator::addBreak()
 }
 
 
-void CCodeGenerator::addLabel(const BasicBlock *bb)
+void CCodeGenerator::addLabel(const IRFragment *frag)
 {
     QString tgt;
     OStream s(&tgt);
 
-    s << "bb0x" << QString::number(bb->getLowAddr().value(), 16) << ":";
+    s << "bb0x" << QString::number(frag->getLowAddr().value(), 16) << ":";
     appendLine(tgt);
 }
 
@@ -895,7 +908,7 @@ void CCodeGenerator::addLocal(const QString &name, SharedType type, bool last)
         if (e->isSubscript() && (e->getSubExp1()->isParam() || e->getSubExp1()->isGlobal()) &&
             e->access<const RefExp>()->isImplicitDef()) {
             ost << " = ";
-            appendExp(ost, *e->getSubExp1(), OpPrec::None);
+            appendExp(ost, e->getSubExp1(), OpPrec::None);
             ost << ";";
         }
         else {
@@ -907,7 +920,6 @@ void CCodeGenerator::addLocal(const QString &name, SharedType type, bool last)
     }
 
     appendLine(tgt);
-    m_locals[name] = type->clone();
 
     if (last) {
         appendLine("");
@@ -950,7 +962,7 @@ void CCodeGenerator::addGlobal(const QString &name, SharedType type, const Share
     if (init && !init->isNil()) {
         s << " = ";
         SharedType base_type = type->isArray() ? type->as<ArrayType>()->getBaseType() : type;
-        appendExp(s, *init, OpPrec::Assign,
+        appendExp(s, init, OpPrec::Assign,
                   base_type->isInteger() ? base_type->as<IntegerType>()->isUnsigned() : false);
     }
 
@@ -970,17 +982,15 @@ void CCodeGenerator::addLineComment(const QString &cmt)
 }
 
 
-void CCodeGenerator::appendExp(OStream &str, const Exp &exp, OpPrec curPrec, bool uns /* = false */)
+void CCodeGenerator::appendExp(OStream &str, const SharedConstExp &exp, OpPrec curPrec,
+                               bool uns /* = false */)
 {
-    const OPER op = exp.getOper();
-    const Const &constExp(static_cast<const Const &>(exp));
-    const Unary &unaryExp(static_cast<const Unary &>(exp));
-    const Binary &binaryExp(static_cast<const Binary &>(exp));
-    const Ternary &ternaryExp(static_cast<const Ternary &>(exp));
+    const OPER op = exp->getOper();
 
     switch (op) {
     case opIntConst: {
-        int K = constExp.getInt();
+        const Const &constExp = *exp->access<Const>();
+        int K                 = constExp.getInt();
 
         if (uns && (K < 0)) {
             // An unsigned constant. Use some heuristics
@@ -1011,6 +1021,7 @@ void CCodeGenerator::appendExp(OStream &str, const Exp &exp, OpPrec curPrec, boo
                 case '\?': str << "'\\?'"; break;
                 case '\'': str << "'\\''"; break;
                 case '\"': str << "'\\\"'"; break;
+                case 0: str << "0"; break;
                 default: str << "'" << static_cast<char>(K) << "'";
                 }
             }
@@ -1028,7 +1039,8 @@ void CCodeGenerator::appendExp(OStream &str, const Exp &exp, OpPrec curPrec, boo
         break;
     }
 
-    case opLongConst:
+    case opLongConst: {
+        const Const &constExp = *exp->access<Const>();
         // str << std::dec << c->getLong() << "LL"; break;
         if ((static_cast<long long>(constExp.getLong()) < -1000LL) ||
             (constExp.getLong() > 1000ULL)) {
@@ -1038,8 +1050,10 @@ void CCodeGenerator::appendExp(OStream &str, const Exp &exp, OpPrec curPrec, boo
             str << constExp.getLong() << "LL";
         }
         break;
+    }
 
     case opFltConst: {
+        const Const &constExp = *exp->access<Const>();
         // str.precision(4);     // What to do with precision here? Would be nice to avoid 1.00000
         // or 0.99999
         QString flt_val = QString::number(constExp.getFlt(), 'g', 8);
@@ -1052,15 +1066,22 @@ void CCodeGenerator::appendExp(OStream &str, const Exp &exp, OpPrec curPrec, boo
         break;
     }
 
-    case opStrConst:
+    case opStrConst: {
+        const Const &constExp = *exp->access<Const>();
         // escape string:
         str << "\"" << Util::escapeStr(constExp.getRawStr()) << "\"";
         break;
+    }
 
-    case opFuncConst: str << constExp.getFuncName(); break;
+    case opFuncConst: {
+        const Const &constExp = *exp->access<Const>();
+        str << constExp.getFuncName();
+        break;
+    }
 
     case opAddrOf: {
-        SharedConstExp sub = unaryExp.getSubExp1();
+        const Unary &unaryExp    = *exp->access<Unary>();
+        const SharedConstExp sub = unaryExp.getSubExp1();
 
         if (sub->isGlobal()) {
             Prog *prog    = m_proc->getProg();
@@ -1068,19 +1089,19 @@ void CCodeGenerator::appendExp(OStream &str, const Exp &exp, OpPrec curPrec, boo
 
             if (gt && (gt->resolvesToArray() || gt->isCString())) {
                 // Special C requirement: don't emit "&" for address of an array or char*
-                appendExp(str, *sub, curPrec);
+                appendExp(str, sub, curPrec);
                 break;
             }
         }
 
         if (sub->isMemOf()) {
             // Avoid &*(type*)sub, just emit sub
-            appendExp(str, *sub->getSubExp1(), OpPrec::Unary);
+            appendExp(str, sub->getSubExp1(), OpPrec::Unary);
         }
         else {
             openParen(str, curPrec, OpPrec::Unary);
             str << "&";
-            appendExp(str, *sub, OpPrec::Unary);
+            appendExp(str, sub, OpPrec::Unary);
             closeParen(str, curPrec, OpPrec::Unary);
         }
 
@@ -1090,82 +1111,106 @@ void CCodeGenerator::appendExp(OStream &str, const Exp &exp, OpPrec curPrec, boo
     case opParam:
     case opGlobal:
     case opLocal: {
-        auto c1 = std::dynamic_pointer_cast<const Const>(unaryExp.getSubExp1());
+        const auto c1 = exp->access<Const, 1>();
         assert(c1 && c1->isStrConst());
         str << c1->getStr();
     } break;
 
     case opEquals: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         openParen(str, curPrec, OpPrec::Equal);
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::Equal);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::Equal);
         str << " == ";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::Equal);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::Equal);
         closeParen(str, curPrec, OpPrec::Equal);
     } break;
 
     case opNotEqual: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         openParen(str, curPrec, OpPrec::Equal);
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::Equal);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::Equal);
         str << " != ";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::Equal);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::Equal);
         closeParen(str, curPrec, OpPrec::Equal);
     } break;
 
     case opLess:
-    case opLessUns:
+    case opLessUns: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         openParen(str, curPrec, OpPrec::Rel);
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::Rel, op == opLessUns);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::Rel, op == opLessUns);
         str << " < ";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::Rel, op == opLessUns);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::Rel, op == opLessUns);
         closeParen(str, curPrec, OpPrec::Rel);
         break;
+    }
 
     case opGtr:
-    case opGtrUns:
+    case opGtrUns: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         openParen(str, curPrec, OpPrec::Rel);
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::Rel, op == opGtrUns);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::Rel, op == opGtrUns);
         str << " > ";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::Rel, op == opGtrUns);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::Rel, op == opGtrUns);
         closeParen(str, curPrec, OpPrec::Rel);
         break;
+    }
 
     case opLessEq:
-    case opLessEqUns:
+    case opLessEqUns: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         openParen(str, curPrec, OpPrec::Rel);
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::Rel, op == opLessEqUns);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::Rel, op == opLessEqUns);
         str << " <= ";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::Rel, op == opLessEqUns);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::Rel, op == opLessEqUns);
         closeParen(str, curPrec, OpPrec::Rel);
         break;
+    }
 
     case opGtrEq:
-    case opGtrEqUns:
+    case opGtrEqUns: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         openParen(str, curPrec, OpPrec::Rel);
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::Rel, op == opGtrEqUns);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::Rel, op == opGtrEqUns);
         str << " >= ";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::Rel, op == opGtrEqUns);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::Rel, op == opGtrEqUns);
         closeParen(str, curPrec, OpPrec::Rel);
         break;
+    }
 
-    case opAnd:
+    case opAnd: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         openParen(str, curPrec, OpPrec::LogAnd);
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::LogAnd);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::LogAnd);
         str << " && ";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::LogAnd);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::LogAnd);
         closeParen(str, curPrec, OpPrec::LogAnd);
         break;
+    }
 
-    case opOr:
+    case opOr: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         openParen(str, curPrec, OpPrec::LogOr);
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::LogOr);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::LogOr);
         str << " || ";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::LogOr);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::LogOr);
         closeParen(str, curPrec, OpPrec::LogOr);
         break;
+    }
 
-    case opBitAnd:
+    case opBitAnd: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         openParen(str, curPrec, OpPrec::BitAnd);
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::BitAnd);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::BitAnd);
         str << " & ";
 
         if (binaryExp.getSubExp2()->isIntConst()) {
@@ -1182,63 +1227,91 @@ void CCodeGenerator::appendExp(OStream &str, const Exp &exp, OpPrec curPrec, boo
             }
         }
         else {
-            appendExp(str, *binaryExp.getSubExp2(), OpPrec::BitAnd);
+            appendExp(str, binaryExp.getSubExp2(), OpPrec::BitAnd);
         }
 
         closeParen(str, curPrec, OpPrec::BitAnd);
         break;
+    }
 
-    case opBitOr:
+    case opBitOr: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         openParen(str, curPrec, OpPrec::BitOr);
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::BitOr);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::BitOr);
         str << " | ";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::BitOr);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::BitOr);
         closeParen(str, curPrec, OpPrec::BitOr);
         break;
+    }
 
-    case opBitXor:
+    case opBitXor: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         openParen(str, curPrec, OpPrec::BitXor);
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::BitXor);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::BitXor);
         str << " ^ ";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::BitXor);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::BitXor);
         closeParen(str, curPrec, OpPrec::BitXor);
         break;
+    }
 
-    case opBitNot:
+    case opBitNot: {
+        const Unary &unaryExp = *exp->access<Unary>();
+
         openParen(str, curPrec, OpPrec::Unary);
         str << "~";
-        appendExp(str, *unaryExp.getSubExp1(), OpPrec::Unary);
+        appendExp(str, unaryExp.getSubExp1(), OpPrec::Unary);
         closeParen(str, curPrec, OpPrec::Unary);
         break;
+    }
 
-    case opLNot:
+    case opLNot: {
+        const Unary &unaryExp = *exp->access<Unary>();
+
         openParen(str, curPrec, OpPrec::Unary);
         str << "!";
-        appendExp(str, *unaryExp.getSubExp1(), OpPrec::Unary);
+        appendExp(str, unaryExp.getSubExp1(), OpPrec::Unary);
         closeParen(str, curPrec, OpPrec::Unary);
         break;
+    }
 
     case opNeg:
-    case opFNeg:
+    case opFNeg: {
+        const Unary &unaryExp = *exp->access<Unary>();
+
         openParen(str, curPrec, OpPrec::Unary);
         str << "-";
-        appendExp(str, *unaryExp.getSubExp1(), OpPrec::Unary);
+        appendExp(str, unaryExp.getSubExp1(), OpPrec::Unary);
         closeParen(str, curPrec, OpPrec::Unary);
         break;
+    }
 
     case opAt: {
-        // I guess that most people will find this easier to read
-        // s1 >> last & 0xMASK
-        openParen(str, curPrec, OpPrec::BitAnd);
-        appendExp(str, *ternaryExp.getSubExp1(), OpPrec::BitShift);
-        auto first = ternaryExp.access<const Const, 2>();
-        auto last  = ternaryExp.access<const Const, 3>();
+        const Ternary &ternaryExp = *exp->access<Ternary>();
 
-        str << " >> ";
-        appendExp(str, *last, OpPrec::BitShift);
+        openParen(str, curPrec, OpPrec::BitAnd);
+
+        // I guess that most people will find this easier to read
+        auto first            = ternaryExp.access<const Const, 2>();
+        auto last             = ternaryExp.access<const Const, 3>();
+        const bool needsShift = !first->isIntConst() || first->access<Const>()->getInt() != 0;
+
+        if (needsShift) {
+            openParen(str, OpPrec::BitAnd, OpPrec::BitShift);
+            appendExp(str, ternaryExp.getSubExp1(), OpPrec::BitShift);
+
+            str << " >> ";
+            appendExp(str, first, OpPrec::BitShift);
+            closeParen(str, OpPrec::BitAnd, OpPrec::BitShift);
+        }
+        else {
+            appendExp(str, ternaryExp.getSubExp1(), OpPrec::BitAnd);
+        }
+
         str << " & ";
 
-        SharedExp maskExp = Binary::get(opPlus, Binary::get(opMinus, first->clone(), last->clone()),
+        SharedExp maskExp = Binary::get(opPlus, Binary::get(opMinus, last->clone(), first->clone()),
                                         Const::get(1))
                                 ->simplify();
 
@@ -1256,38 +1329,49 @@ void CCodeGenerator::appendExp(OStream &str, const Exp &exp, OpPrec curPrec, boo
         else {
             maskExp = Binary::get(opMinus, Binary::get(opShL, Const::get(1), maskExp),
                                   Const::get(1));
-            appendExp(str, *maskExp, OpPrec::BitAnd);
+            appendExp(str, maskExp, OpPrec::BitAnd);
         }
 
         closeParen(str, curPrec, OpPrec::BitAnd);
         break;
     }
 
-    case opPlus:
+    case opPlus: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         openParen(str, curPrec, OpPrec::Add);
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::Add);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::Add);
         str << " + ";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::Add);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::Add);
         closeParen(str, curPrec, OpPrec::Add);
         break;
+    }
 
-    case opMinus:
+    case opMinus: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         openParen(str, curPrec, OpPrec::Add);
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::Add);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::Add);
         str << " - ";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::Add);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::Add);
         closeParen(str, curPrec, OpPrec::Add);
         break;
+    }
 
-    case opMemOf:
+    case opMemOf: {
+        const Unary &unaryExp = *exp->access<Unary>();
+
         openParen(str, curPrec, OpPrec::Unary);
         // annotateMemofs should have added a cast if it was needed
         str << "*";
-        appendExp(str, *unaryExp.getSubExp1(), OpPrec::Unary);
+        appendExp(str, unaryExp.getSubExp1(), OpPrec::Unary);
         closeParen(str, curPrec, OpPrec::Unary);
         break;
+    }
 
     case opRegOf: {
+        const Unary &unaryExp = *exp->access<Unary>();
+
         // MVE: this can likely go
         LOG_VERBOSE("Case opRegOf is deprecated");
 
@@ -1307,27 +1391,34 @@ void CCodeGenerator::appendExp(OStream &str, const Exp &exp, OpPrec curPrec, boo
         else {
             // What is this doing in the back end???
             str << "r[";
-            appendExp(str, *unaryExp.getSubExp1(), OpPrec::None);
+            appendExp(str, unaryExp.getSubExp1(), OpPrec::None);
             str << "]";
         }
     } break;
 
-    case opTemp:
+    case opTemp: {
+        const Unary &unaryExp = *exp->access<Unary>();
+
         // Should never see this; temps should be mapped to locals now so that they get declared
         LOG_VERBOSE("Case opTemp is deprecated");
         // Emit the temp name, e.g. "tmp1"
         str << unaryExp.access<Const, 1>()->getStr();
         break;
+    }
 
-    case opItof:
+    case opItof: {
+        const Ternary &ternaryExp = *exp->access<Ternary>();
+
         // TODO: MVE: needs work: float/double/long double.
         str << "(float)";
         openParen(str, curPrec, OpPrec::Unary);
-        appendExp(str, *ternaryExp.getSubExp3(), OpPrec::Unary);
+        appendExp(str, ternaryExp.getSubExp3(), OpPrec::Unary);
         closeParen(str, curPrec, OpPrec::Unary);
         break;
+    }
 
-    case opFsize:
+    case opFsize: {
+        const Ternary &ternaryExp = *exp->access<Ternary>();
 
         // TODO: needs work!
         if (ternaryExp.getSubExp3()->isMemOf()) {
@@ -1343,175 +1434,233 @@ void CCodeGenerator::appendExp(OStream &str, const Exp &exp, OpPrec curPrec, boo
             }
 
             openParen(str, curPrec, curPrec);
-            appendExp(str, *ternaryExp.getSubExp3(), curPrec);
+            appendExp(str, ternaryExp.getSubExp3(), curPrec);
             closeParen(str, curPrec, curPrec);
             str << ")";
         }
         else {
-            appendExp(str, *ternaryExp.getSubExp3(), curPrec);
+            appendExp(str, ternaryExp.getSubExp3(), curPrec);
         }
 
         break;
+    }
 
     case opMult:
-    case opMults: // FIXME: check types
+    case opMults: { // FIXME: check types
+        const Binary &binaryExp = *exp->access<Binary>();
+
         openParen(str, curPrec, OpPrec::Mult);
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::Mult);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::Mult);
         str << " * ";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::Mult);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::Mult);
         closeParen(str, curPrec, OpPrec::Mult);
         break;
+    }
 
     case opDiv:
-    case opDivs: // FIXME: check types
+    case opDivs: { // FIXME: check types
+        const Binary &binaryExp = *exp->access<Binary>();
+
         openParen(str, curPrec, OpPrec::Mult);
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::Mult);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::Mult);
         str << " / ";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::Mult);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::Mult);
         closeParen(str, curPrec, OpPrec::Mult);
         break;
+    }
 
     case opMod:
-    case opMods: // Fixme: check types
+    case opMods: { // Fixme: check types
+        const Binary &binaryExp = *exp->access<Binary>();
+
         openParen(str, curPrec, OpPrec::Mult);
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::Mult);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::Mult);
         str << " % ";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::Mult);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::Mult);
         closeParen(str, curPrec, OpPrec::Mult);
         break;
+    }
 
-    case opShL:
+    case opShL: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         openParen(str, curPrec, OpPrec::BitShift);
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::BitShift);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::BitShift);
         str << " << ";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::BitShift);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::BitShift);
         closeParen(str, curPrec, OpPrec::BitShift);
         break;
+    }
 
     case opShR:
-    case opShRA:
+    case opShRA: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         openParen(str, curPrec, OpPrec::BitShift);
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::BitShift);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::BitShift);
         str << " >> ";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::BitShift);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::BitShift);
         closeParen(str, curPrec, OpPrec::BitShift);
         break;
+    }
 
-    case opTern:
+    case opTern: {
+        const Ternary &ternaryExp = *exp->access<Ternary>();
+
         openParen(str, curPrec, OpPrec::Cond);
         str << " (";
-        appendExp(str, *ternaryExp.getSubExp1(), OpPrec::None);
+        appendExp(str, ternaryExp.getSubExp1(), OpPrec::None);
         str << ") ? ";
-        appendExp(str, *ternaryExp.getSubExp2(), OpPrec::Cond);
+        appendExp(str, ternaryExp.getSubExp2(), OpPrec::Cond);
         str << " : ";
-        appendExp(str, *ternaryExp.getSubExp3(), OpPrec::Cond);
+        appendExp(str, ternaryExp.getSubExp3(), OpPrec::Cond);
         closeParen(str, curPrec, OpPrec::Cond);
         break;
+    }
 
-    case opFPlus:
+    case opFPlus: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         openParen(str, curPrec, OpPrec::Add);
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::Add);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::Add);
         str << " + ";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::Add);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::Add);
         closeParen(str, curPrec, OpPrec::Add);
         break;
+    }
 
-    case opFMinus:
+    case opFMinus: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         openParen(str, curPrec, OpPrec::Add);
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::Add);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::Add);
         str << " - ";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::Add);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::Add);
         closeParen(str, curPrec, OpPrec::Add);
         break;
+    }
 
-    case opFMult:
+    case opFMult: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         openParen(str, curPrec, OpPrec::Mult);
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::Mult);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::Mult);
         str << " * ";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::Mult);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::Mult);
         closeParen(str, curPrec, OpPrec::Mult);
         break;
+    }
 
-    case opFDiv:
+    case opFDiv: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         openParen(str, curPrec, OpPrec::Mult);
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::Mult);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::Mult);
         str << " / ";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::Mult);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::Mult);
         closeParen(str, curPrec, OpPrec::Mult);
         break;
+    }
 
-    case opFround:
+    case opFround: {
+        const Ternary &ternaryExp = *exp->access<Ternary>();
+
         // Note: we need roundf or roundl depending on size of operands
         str << "round("; // Note: math.h required
-        appendExp(str, *unaryExp.getSubExp1(), OpPrec::None);
+        appendExp(str, ternaryExp.getSubExp3(), OpPrec::None);
         str << ")";
         break;
+    }
 
-    case opFtrunc:
+    case opFtrunc: {
+        const Unary &unaryExp = *exp->access<Unary>();
+
         // Note: we need truncf or truncl depending on size of operands
         str << "trunc("; // Note: math.h required
-        appendExp(str, *unaryExp.getSubExp1(), OpPrec::None);
+        appendExp(str, unaryExp.getSubExp1(), OpPrec::None);
         str << ")";
         break;
+    }
 
-    case opFabs:
+    case opFabs: {
+        const Unary &unaryExp = *exp->access<Unary>();
+
         str << "fabs(";
-        appendExp(str, *unaryExp.getSubExp1(), OpPrec::None);
+        appendExp(str, unaryExp.getSubExp1(), OpPrec::None);
         str << ")";
         break;
+    }
 
-    case opFtoi:
+    case opFtoi: {
+        const Ternary &ternaryExp = *exp->access<Ternary>();
+
         // Should check size!
         str << "(int)";
-        appendExp(str, *unaryExp.getSubExp3(), OpPrec::Unary);
+        appendExp(str, ternaryExp.getSubExp3(), OpPrec::Unary);
         break;
+    }
 
-    case opRotL:
+    case opRotL: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         str << "ROTL(";
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::Unary);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::Unary);
         str << ", ";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::Unary);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::Unary);
         str << ")";
         break;
+    }
 
-    case opRotR:
+    case opRotR: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         str << "ROTR(";
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::Unary);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::Unary);
         str << ", ";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::Unary);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::Unary);
         str << ")";
         break;
+    }
 
-    case opRotLC:
+    case opRotLC: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         str << "ROTLC(";
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::Unary);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::Unary);
         str << ", ";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::Unary);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::Unary);
         str << ")";
         break;
+    }
 
-    case opRotRC:
+    case opRotRC: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         str << "ROTRC(";
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::Unary);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::Unary);
         str << ", ";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::Unary);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::Unary);
         str << ")";
         break;
+    }
 
-    case opLoge:
+    case opLoge: {
         // not implemented
-        LOG_WARN("Case %1 not implemented", operToString(exp.getOper()));
+        LOG_WARN("Case %1 not implemented", operToString(exp->getOper()));
         // assert(false);
         break;
+    }
 
     case opFlagCall: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         assert(binaryExp.getSubExp1()->isStrConst());
         str << binaryExp.access<Const, 1>()->getStr();
         str << "(";
         auto l = binaryExp.getSubExp2();
 
         for (; l && l->getOper() == opList; l = l->getSubExp2()) {
-            appendExp(str, *l->getSubExp1(), OpPrec::None);
+            appendExp(str, l->getSubExp1(), OpPrec::None);
 
             if (l->getSubExp2()->getOper() == opList) {
                 str << ", ";
@@ -1522,6 +1671,8 @@ void CCodeGenerator::appendExp(OStream &str, const Exp &exp, OpPrec curPrec, boo
     } break;
 
     case opList: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         int elems_on_line = 0; // try to limit line lengths
         SharedConstExp b2 = binaryExp.shared_from_this();
         SharedConstExp e2 = binaryExp.getSubExp2();
@@ -1532,7 +1683,7 @@ void CCodeGenerator::appendExp(OStream &str, const Exp &exp, OpPrec curPrec, boo
         }
 
         while (e2->getOper() == opList) {
-            appendExp(str, *b2->getSubExp1(), OpPrec::None, uns);
+            appendExp(str, b2->getSubExp1(), OpPrec::None, uns);
             ++elems_on_line;
 
             if ((b2->getSubExp1()->getOper() == opList) ||
@@ -1548,15 +1699,22 @@ void CCodeGenerator::appendExp(OStream &str, const Exp &exp, OpPrec curPrec, boo
             e2 = b2->getSubExp2();
         }
 
-        appendExp(str, *b2->getSubExp1(), OpPrec::None, uns);
+        appendExp(str, b2->getSubExp1(), OpPrec::None, uns);
         str << " }";
     } break;
 
-    case opFlags: str << "flags"; break;
+    case opFlags: {
+        str << "flags";
+        break;
+    }
 
-    case opPC: str << "pc"; break;
+    case opPC: {
+        str << "pc";
+        break;
+    }
 
-    case opZfill:
+    case opZfill: {
+        const Ternary &ternaryExp = *exp->access<Ternary>();
 
         // MVE: this is a temporary hack... needs cast?
         // sprintf(s, "/* zfill %d->%d */ ",
@@ -1581,7 +1739,7 @@ void CCodeGenerator::appendExp(OStream &str, const Exp &exp, OpPrec curPrec, boo
 
                 str << "*)";
                 openParen(str, curPrec, OpPrec::Unary);
-                appendExp(str, *ternaryExp.getSubExp3()->getSubExp1(), OpPrec::Unary);
+                appendExp(str, ternaryExp.getSubExp3()->getSubExp1(), OpPrec::Unary);
                 closeParen(str, curPrec, OpPrec::Unary);
 
                 break;
@@ -1590,16 +1748,19 @@ void CCodeGenerator::appendExp(OStream &str, const Exp &exp, OpPrec curPrec, boo
 
         LOG_VERBOSE("Case opZfill is deprecated");
         str << "(";
-        appendExp(str, *ternaryExp.getSubExp3(), OpPrec::None);
+        appendExp(str, ternaryExp.getSubExp3(), OpPrec::None);
         str << ")";
         break;
+    }
 
     case opTypedExp: {
+        const Unary &unaryExp = *exp->access<Unary>();
+
         if (unaryExp.getSubExp1()->isTypedExp() &&
             (*static_cast<const TypedExp &>(unaryExp).getType() ==
              *unaryExp.access<TypedExp, 1>()->getType())) {
             // We have (type)(type)x: recurse with type(x)
-            appendExp(str, *unaryExp.getSubExp1(), curPrec);
+            appendExp(str, unaryExp.getSubExp1(), curPrec);
         }
         else if (unaryExp.getSubExp1()->isMemOf()) {
             // We have (tt)m[x]
@@ -1625,7 +1786,7 @@ void CCodeGenerator::appendExp(OStream &str, const Exp &exp, OpPrec curPrec, boo
             openParen(str, curPrec, OpPrec::Unary);
             // Emit x
             // was : ((Location*)((TypedExp&)u).getSubExp1())->getSubExp1()
-            appendExp(str, *unaryExp.getSubExp1()->getSubExp1(), OpPrec::Unary);
+            appendExp(str, unaryExp.getSubExp1()->getSubExp1(), OpPrec::Unary);
             closeParen(str, curPrec, OpPrec::Unary);
         }
         else {
@@ -1634,7 +1795,7 @@ void CCodeGenerator::appendExp(OStream &str, const Exp &exp, OpPrec curPrec, boo
             appendType(str, tt);
             str << ")";
             openParen(str, curPrec, OpPrec::Unary);
-            appendExp(str, *unaryExp.getSubExp1(), OpPrec::Unary);
+            appendExp(str, unaryExp.getSubExp1(), OpPrec::Unary);
             closeParen(str, curPrec, OpPrec::Unary);
         }
 
@@ -1643,6 +1804,8 @@ void CCodeGenerator::appendExp(OStream &str, const Exp &exp, OpPrec curPrec, boo
 
     case opSgnEx:
     case opTruncs: {
+        const Ternary &ternaryExp = *exp->access<Ternary>();
+
         SharedConstExp s = ternaryExp.getSubExp3();
         int toSize       = ternaryExp.access<Const, 2>()->getInt();
 
@@ -1653,11 +1816,13 @@ void CCodeGenerator::appendExp(OStream &str, const Exp &exp, OpPrec curPrec, boo
         default: str << "(int) "; break;
         }
 
-        appendExp(str, *s, curPrec);
+        appendExp(str, s, curPrec);
         break;
     }
 
     case opTruncu: {
+        const Ternary &ternaryExp = *exp->access<Ternary>();
+
         SharedConstExp s = ternaryExp.getSubExp3();
         int toSize       = ternaryExp.access<Const, 2>()->getInt();
 
@@ -1668,11 +1833,13 @@ void CCodeGenerator::appendExp(OStream &str, const Exp &exp, OpPrec curPrec, boo
         default: str << "(unsigned int) "; break;
         }
 
-        appendExp(str, *s, curPrec);
+        appendExp(str, s, curPrec);
         break;
     }
 
     case opMachFtr: {
+        const Unary &unaryExp = *exp->access<Unary>();
+
         str << "/* machine specific */ (int) ";
         auto sub = unaryExp.access<Const, 1>();
         assert(sub->isStrConst());
@@ -1688,65 +1855,96 @@ void CCodeGenerator::appendExp(OStream &str, const Exp &exp, OpPrec curPrec, boo
         break;
     }
 
-    case opFflags: str << "/* Fflags() */ "; break;
+    case opFflags: {
+        str << "/* Fflags() */ ";
+        break;
+    }
 
-    case opPow:
+    case opPow: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         str << "pow(";
-        appendExp(str, *binaryExp.getSubExp1(), OpPrec::Comma);
+        appendExp(str, binaryExp.getSubExp1(), OpPrec::Comma);
         str << ", ";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::Comma);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::Comma);
         str << ")";
         break;
+    }
 
-    case opLog2:
+    case opLog2: {
+        const Unary &unaryExp = *exp->access<Unary>();
+
         str << "log2(";
-        appendExp(str, *unaryExp.getSubExp1(), OpPrec::None);
+        appendExp(str, unaryExp.getSubExp1(), OpPrec::None);
         str << ")";
         break;
+    }
 
-    case opLog10:
+    case opLog10: {
+        const Unary &unaryExp = *exp->access<Unary>();
+
         str << "log10(";
-        appendExp(str, *unaryExp.getSubExp1(), OpPrec::None);
+        appendExp(str, unaryExp.getSubExp1(), OpPrec::None);
         str << ")";
         break;
+    }
 
-    case opSin:
+    case opSin: {
+        const Unary &unaryExp = *exp->access<Unary>();
+
         str << "sin(";
-        appendExp(str, *unaryExp.getSubExp1(), OpPrec::None);
+        appendExp(str, unaryExp.getSubExp1(), OpPrec::None);
         str << ")";
         break;
+    }
 
-    case opCos:
+    case opCos: {
+        const Unary &unaryExp = *exp->access<Unary>();
+
         str << "cos(";
-        appendExp(str, *unaryExp.getSubExp1(), OpPrec::None);
+        appendExp(str, unaryExp.getSubExp1(), OpPrec::None);
         str << ")";
         break;
+    }
 
-    case opSqrt:
+    case opSqrt: {
+        const Unary &unaryExp = *exp->access<Unary>();
+
         str << "sqrt(";
-        appendExp(str, *unaryExp.getSubExp1(), OpPrec::None);
+        appendExp(str, unaryExp.getSubExp1(), OpPrec::None);
         str << ")";
         break;
+    }
 
-    case opTan:
+    case opTan: {
+        const Unary &unaryExp = *exp->access<Unary>();
+
         str << "tan(";
-        appendExp(str, *unaryExp.getSubExp1(), OpPrec::None);
+        appendExp(str, unaryExp.getSubExp1(), OpPrec::None);
         str << ")";
         break;
+    }
 
-    case opArcTan:
+    case opArcTan: {
+        const Unary &unaryExp = *exp->access<Unary>();
+
         str << "atan(";
-        appendExp(str, *unaryExp.getSubExp1(), OpPrec::None);
+        appendExp(str, unaryExp.getSubExp1(), OpPrec::None);
         str << ")";
         break;
+    }
 
-    case opSubscript:
-        appendExp(str, *unaryExp.getSubExp1(), curPrec);
+    case opSubscript: {
+        const Unary &unaryExp = *exp->access<Unary>();
+
+        appendExp(str, unaryExp.getSubExp1(), curPrec);
         LOG_ERROR("Subscript in code generation of proc %1", m_proc->getName());
         break;
+    }
 
     case opMemberAccess: {
-        SharedType ty = nullptr;
+        const Binary &binaryExp = *exp->access<Binary>();
+        SharedType ty           = nullptr;
 
         //             if (ty == nullptr) {
         LOG_MSG("Type failure: no type for subexp1 of %1", binaryExp.shared_from_this());
@@ -1762,18 +1960,20 @@ void CCodeGenerator::appendExp(OStream &str, const Exp &exp, OpPrec curPrec, boo
         // Mike: it shouldn't!  local11 should have a compound type
         // assert(ty->resolvesToCompound());
         if (binaryExp.getSubExp1()->isMemOf()) {
-            appendExp(str, *binaryExp.getSubExp1()->getSubExp1(), OpPrec::Prim);
+            appendExp(str, binaryExp.getSubExp1()->getSubExp1(), OpPrec::Prim);
             str << "->";
         }
         else {
-            appendExp(str, *binaryExp.getSubExp1(), OpPrec::Prim);
+            appendExp(str, binaryExp.getSubExp1(), OpPrec::Prim);
             str << ".";
         }
 
         str << binaryExp.access<const Const, 2>()->getStr();
     } break;
 
-    case opArrayIndex:
+    case opArrayIndex: {
+        const Binary &binaryExp = *exp->access<Binary>();
+
         openParen(str, curPrec, OpPrec::Prim);
 
         if (binaryExp.getSubExp1()->isMemOf()) {
@@ -1782,43 +1982,52 @@ void CCodeGenerator::appendExp(OStream &str, const Exp &exp, OpPrec curPrec, boo
             if (ty && ty->resolvesToPointer() &&
                 ty->as<PointerType>()->getPointsTo()->resolvesToArray()) {
                 // a pointer to an array is automatically dereferenced in C
-                appendExp(str, *binaryExp.getSubExp1()->getSubExp1(), OpPrec::Prim);
+                appendExp(str, binaryExp.getSubExp1()->getSubExp1(), OpPrec::Prim);
             }
             else {
-                appendExp(str, *binaryExp.getSubExp1(), OpPrec::Prim);
+                appendExp(str, binaryExp.getSubExp1(), OpPrec::Prim);
             }
         }
         else {
-            appendExp(str, *binaryExp.getSubExp1(), OpPrec::Prim);
+            appendExp(str, binaryExp.getSubExp1(), OpPrec::Prim);
         }
 
         closeParen(str, curPrec, OpPrec::Prim);
         str << "[";
-        appendExp(str, *binaryExp.getSubExp2(), OpPrec::Prim);
+        appendExp(str, binaryExp.getSubExp2(), OpPrec::Prim);
         str << "]";
         break;
+    }
 
-    case opDefineAll:
+    case opDefineAll: {
         str << "<all>";
         LOG_ERROR("Should not see opDefineAll in codegen");
         break;
+    }
 
-    case opTrue: str << "true"; break;
+    case opTrue: {
+        str << "true";
+        break;
+    }
 
-    case opFalse: str << "false"; break;
+    case opFalse: {
+        str << "false";
+        break;
+    }
 
-    default:
+    default: {
         // others
-        OPER other_op = exp.getOper();
+        const OPER other_op = exp->getOper();
 
         if (other_op >= opZF) {
             // Machine flags; can occasionally be manipulated individually
             // Chop off the "op" part
-            str << operToString(exp.getOper()) + 2;
+            str << operToString(other_op) + 2;
             break;
         }
 
-        LOG_ERROR("case %1 not implemented", operToString(exp.getOper()));
+        LOG_ERROR("case %1 not implemented", operToString(exp->getOper()));
+    }
     }
 }
 
@@ -1901,35 +2110,35 @@ void CCodeGenerator::closeParen(OStream &str, OpPrec outer, OpPrec inner)
 }
 
 
-void CCodeGenerator::generateCode(const BasicBlock *bb, const BasicBlock *latch,
-                                  std::list<const BasicBlock *> &followSet,
-                                  std::list<const BasicBlock *> &gotoSet, UserProc *proc)
+void CCodeGenerator::generateCode(const IRFragment *frag, const IRFragment *latch,
+                                  std::list<const IRFragment *> &followSet,
+                                  std::list<const IRFragment *> &gotoSet, UserProc *proc)
 {
     // If this is the follow for the most nested enclosing conditional, then don't generate
     // anything. Otherwise if it is in the follow set generate a goto to the follow
-    const BasicBlock *enclFollow = followSet.empty() ? nullptr : followSet.back();
+    const IRFragment *enclFollow = followSet.empty() ? nullptr : followSet.back();
 
-    if (Util::isContained(gotoSet, bb) && !m_analyzer.isLatchNode(bb) &&
+    if (Util::isContained(gotoSet, frag) && !m_analyzer.isLatchNode(frag) &&
         ((latch && m_analyzer.getLoopHead(latch) &&
-          (bb == m_analyzer.getLoopFollow(m_analyzer.getLoopHead(latch)))) ||
-         !isAllParentsGenerated(bb))) {
-        emitGotoAndLabel(bb, bb);
+          (frag == m_analyzer.getLoopFollow(m_analyzer.getLoopHead(latch)))) ||
+         !isAllParentsGenerated(frag))) {
+        emitGotoAndLabel(frag, frag);
         return;
     }
-    else if (Util::isContained(followSet, bb)) {
-        if (bb != enclFollow) {
-            emitGotoAndLabel(bb, bb);
+    else if (Util::isContained(followSet, frag)) {
+        if (frag != enclFollow) {
+            emitGotoAndLabel(frag, frag);
         }
 
         return;
     }
 
-    if (isGenerated(bb)) {
+    if (isGenerated(frag)) {
         // this should only occur for a loop over a single block
         return;
     }
     else {
-        m_generatedBBs.insert(bb);
+        m_generatedFrags.insert(frag);
     }
 
     //
@@ -1951,7 +2160,7 @@ void CCodeGenerator::generateCode(const BasicBlock *bb, const BasicBlock *latch,
     //        }
     //    \endcode
     //
-    if (m_analyzer.isLatchNode(bb)) {
+    if (m_analyzer.isLatchNode(frag)) {
         // FIXME
         //         if (latch && latch->getLoopHead() &&
         //             (m_indent == latch->getLoopHead()->m_indentLevel +
@@ -1963,72 +2172,74 @@ void CCodeGenerator::generateCode(const BasicBlock *bb, const BasicBlock *latch,
         //             bb->m_traversed = TravType::Untraversed;
         //             emitGotoAndLabel(this, bb);
         //         }
-        writeBB(bb);
+        writeFragment(frag);
         return;
     }
 
-    switch (m_analyzer.getStructType(bb)) {
+    switch (m_analyzer.getStructType(frag)) {
     case StructType::Loop:
-    case StructType::LoopCond: generateCode_Loop(bb, gotoSet, proc, latch, followSet); break;
+    case StructType::LoopCond: generateCode_Loop(frag, gotoSet, proc, latch, followSet); break;
 
     case StructType::Cond: // if-else / case
-        generateCode_Branch(bb, gotoSet, proc, latch, followSet);
+        generateCode_Branch(frag, gotoSet, proc, latch, followSet);
         break;
 
-    case StructType::Seq: generateCode_Seq(bb, gotoSet, proc, latch, followSet); break;
+    case StructType::Seq: generateCode_Seq(frag, gotoSet, proc, latch, followSet); break;
 
     default:
-        LOG_ERROR("Unhandled structuring type %1", static_cast<int>(m_analyzer.getStructType(bb)));
+        LOG_ERROR("Unhandled structuring type %1",
+                  static_cast<int>(m_analyzer.getStructType(frag)));
     }
 }
 
 
-void CCodeGenerator::generateCode_Loop(const BasicBlock *bb, std::list<const BasicBlock *> &gotoSet,
-                                       UserProc *proc, const BasicBlock *latch,
-                                       std::list<const BasicBlock *> &followSet)
+void CCodeGenerator::generateCode_Loop(const IRFragment *frag,
+                                       std::list<const IRFragment *> &gotoSet, UserProc *proc,
+                                       const IRFragment *latch,
+                                       std::list<const IRFragment *> &followSet)
 {
     // add the follow of the loop (if it exists) to the follow set
-    if (m_analyzer.getLoopFollow(bb)) {
-        followSet.push_back(m_analyzer.getLoopFollow(bb));
+    if (m_analyzer.getLoopFollow(frag)) {
+        followSet.push_back(m_analyzer.getLoopFollow(frag));
     }
 
-    if (m_analyzer.getLoopType(bb) == LoopType::PreTested) {
-        assert(m_analyzer.getLatchNode(bb)->getNumSuccessors() == 1);
+    if (m_analyzer.getLoopType(frag) == LoopType::PreTested) {
+        assert(m_analyzer.getLatchNode(frag)->getNumSuccessors() == 1);
 
         // write the body of the block (excluding the predicate)
-        writeBB(bb);
+        writeFragment(frag);
 
         // write the 'while' predicate
-        SharedExp cond = bb->getCond();
+        SharedExp cond = frag->getCond();
 
-        if (bb->getSuccessor(BTHEN) == m_analyzer.getLoopFollow(bb)) {
+        if (frag->getSuccessor(BTHEN) == m_analyzer.getLoopFollow(frag)) {
             cond = Unary::get(opLNot, cond)->simplify();
         }
 
         addPretestedLoopHeader(cond);
 
         // write the code for the body of the loop
-        const BasicBlock *loopBody = (bb->getSuccessor(BELSE) == m_analyzer.getLoopFollow(bb))
-                                         ? bb->getSuccessor(BTHEN)
-                                         : bb->getSuccessor(BELSE);
-        generateCode(loopBody, m_analyzer.getLatchNode(bb), followSet, gotoSet, proc);
+        const IRFragment *loopBody = (frag->getSuccessor(BELSE) == m_analyzer.getLoopFollow(frag))
+                                         ? frag->getSuccessor(BTHEN)
+                                         : frag->getSuccessor(BELSE);
+        generateCode(loopBody, m_analyzer.getLatchNode(frag), followSet, gotoSet, proc);
 
         // if code has not been generated for the latch node, generate it now
-        if (!isGenerated(m_analyzer.getLatchNode(bb))) {
-            m_generatedBBs.insert(m_analyzer.getLatchNode(bb));
-            writeBB(m_analyzer.getLatchNode(bb));
+        if (!isGenerated(m_analyzer.getLatchNode(frag))) {
+            m_generatedFrags.insert(m_analyzer.getLatchNode(frag));
+            writeFragment(m_analyzer.getLatchNode(frag));
         }
 
         // rewrite the body of the block (excluding the predicate) at the next nesting level after
         // making sure another label won't be generated
-        writeBB(bb);
+        writeFragment(frag);
 
         // write the loop tail
         addPretestedLoopEnd();
     }
     else {
         // write the loop header
-        if (m_analyzer.getLoopType(bb) == LoopType::Endless) {
+        if (m_analyzer.getLoopType(frag) == LoopType::Endless) {
             addEndlessLoopHeader();
         }
         else {
@@ -2037,32 +2248,32 @@ void CCodeGenerator::generateCode_Loop(const BasicBlock *bb, std::list<const Bas
 
         // if this is also a conditional header, then generate code for the conditional. Otherwise
         // generate code for the loop body.
-        if (m_analyzer.getStructType(bb) == StructType::LoopCond) {
+        if (m_analyzer.getStructType(frag) == StructType::LoopCond) {
             // set the necessary flags so that generateCode can successfully be called again on this
             // node
-            m_analyzer.setStructType(bb, StructType::Cond);
-            m_analyzer.setTravType(bb, TravType::Untraversed);
-            m_generatedBBs.erase(bb);
-            generateCode(bb, m_analyzer.getLatchNode(bb), followSet, gotoSet, proc);
+            m_analyzer.setStructType(frag, StructType::Cond);
+            m_analyzer.setTravType(frag, TravType::Untraversed);
+            m_generatedFrags.erase(frag);
+            generateCode(frag, m_analyzer.getLatchNode(frag), followSet, gotoSet, proc);
         }
         else {
-            writeBB(bb);
+            writeFragment(frag);
 
             // write the code for the body of the loop
-            generateCode(bb->getSuccessor(0), m_analyzer.getLatchNode(bb), followSet, gotoSet,
+            generateCode(frag->getSuccessor(0), m_analyzer.getLatchNode(frag), followSet, gotoSet,
                          proc);
         }
 
-        if (m_analyzer.getLoopType(bb) == LoopType::PostTested) {
+        if (m_analyzer.getLoopType(frag) == LoopType::PostTested) {
             // if code has not been generated for the latch node, generate it now
-            if (!isGenerated(m_analyzer.getLatchNode(bb))) {
-                m_generatedBBs.insert(m_analyzer.getLatchNode(bb));
-                writeBB(m_analyzer.getLatchNode(bb));
+            if (!isGenerated(m_analyzer.getLatchNode(frag))) {
+                m_generatedFrags.insert(m_analyzer.getLatchNode(frag));
+                writeFragment(m_analyzer.getLatchNode(frag));
             }
 
-            const BasicBlock *myLatch = m_analyzer.getLatchNode(bb);
-            const BasicBlock *myHead  = m_analyzer.getLoopHead(myLatch);
-            assert(myLatch->isType(BBType::Twoway));
+            const IRFragment *myLatch = m_analyzer.getLatchNode(frag);
+            const IRFragment *myHead  = m_analyzer.getLoopHead(myLatch);
+            assert(myLatch->isType(FragType::Twoway));
 
             SharedExp cond = myLatch->getCond();
             if (myLatch->getSuccessor(BELSE) == myHead) {
@@ -2073,12 +2284,12 @@ void CCodeGenerator::generateCode_Loop(const BasicBlock *bb, std::list<const Bas
             }
         }
         else {
-            assert(m_analyzer.getLoopType(bb) == LoopType::Endless);
+            assert(m_analyzer.getLoopType(frag) == LoopType::Endless);
 
             // if code has not been generated for the latch node, generate it now
-            if (!isGenerated(m_analyzer.getLatchNode(bb))) {
-                m_generatedBBs.insert(m_analyzer.getLatchNode(bb));
-                writeBB(m_analyzer.getLatchNode(bb));
+            if (!isGenerated(m_analyzer.getLatchNode(frag))) {
+                m_generatedFrags.insert(m_analyzer.getLatchNode(frag));
+                writeFragment(m_analyzer.getLatchNode(frag));
             }
 
             // write the closing bracket for an endless loop
@@ -2087,61 +2298,62 @@ void CCodeGenerator::generateCode_Loop(const BasicBlock *bb, std::list<const Bas
     }
 
     // write the code for the follow of the loop (if it exists)
-    if (m_analyzer.getLoopFollow(bb)) {
+    if (m_analyzer.getLoopFollow(frag)) {
         // remove the follow from the follow set
         followSet.pop_back();
 
-        if (!isGenerated(m_analyzer.getLoopFollow(bb))) {
-            generateCode(m_analyzer.getLoopFollow(bb), latch, followSet, gotoSet, proc);
+        if (!isGenerated(m_analyzer.getLoopFollow(frag))) {
+            generateCode(m_analyzer.getLoopFollow(frag), latch, followSet, gotoSet, proc);
         }
         else {
-            emitGotoAndLabel(bb, m_analyzer.getLoopFollow(bb));
+            emitGotoAndLabel(frag, m_analyzer.getLoopFollow(frag));
         }
     }
 }
 
 
-void CCodeGenerator::generateCode_Branch(const BasicBlock *bb,
-                                         std::list<const BasicBlock *> &gotoSet, UserProc *proc,
-                                         const BasicBlock *latch,
-                                         std::list<const BasicBlock *> &followSet)
+void CCodeGenerator::generateCode_Branch(const IRFragment *frag,
+                                         std::list<const IRFragment *> &gotoSet, UserProc *proc,
+                                         const IRFragment *latch,
+                                         std::list<const IRFragment *> &followSet)
 {
     // reset this back to LoopCond if it was originally of this type
-    if (m_analyzer.getLatchNode(bb) != nullptr) {
-        m_analyzer.setStructType(bb, StructType::LoopCond);
+    if (m_analyzer.getLatchNode(frag) != nullptr) {
+        m_analyzer.setStructType(frag, StructType::LoopCond);
     }
 
     // for 2 way conditional headers that are effectively jumps into
     // or out of a loop or case body, we will need a new follow node
-    const BasicBlock *tmpCondFollow = nullptr;
+    const IRFragment *tmpCondFollow = nullptr;
 
     // keep track of how many nodes were added to the goto set so that
     // the correct number are removed
     int gotoTotal = 0;
 
     // add the follow to the follow set if this is a case header
-    if (m_analyzer.getCondType(bb) == CondType::Case) {
-        followSet.push_back(m_analyzer.getCondFollow(bb));
+    if (m_analyzer.getCondType(frag) == CondType::Case) {
+        followSet.push_back(m_analyzer.getCondFollow(frag));
     }
-    else if (m_analyzer.getCondFollow(bb) != nullptr) {
+    else if (m_analyzer.getCondFollow(frag) != nullptr) {
         // For a structured two conditional header,
         // its follow is added to the follow set
         // myLoopHead = (sType == LoopCond ? this : loopHead);
 
-        if (m_analyzer.getUnstructType(bb) == UnstructType::Structured) {
-            followSet.push_back(m_analyzer.getCondFollow(bb));
+        if (m_analyzer.getUnstructType(frag) == UnstructType::Structured) {
+            followSet.push_back(m_analyzer.getCondFollow(frag));
         }
 
         // Otherwise, for a jump into/outof a loop body, the follow is added to the goto set.
         // The temporary follow is set for any unstructured conditional header branch that is within
         // the same loop and case.
         else {
-            if (m_analyzer.getUnstructType(bb) == UnstructType::JumpInOutLoop) {
+            if (m_analyzer.getUnstructType(frag) == UnstructType::JumpInOutLoop) {
                 // define the loop header to be compared against
-                const BasicBlock *myLoopHead = (m_analyzer.getStructType(bb) == StructType::LoopCond
-                                                    ? bb
-                                                    : m_analyzer.getLoopHead(bb));
-                gotoSet.push_back(m_analyzer.getCondFollow(bb));
+                const IRFragment *myLoopHead = (m_analyzer.getStructType(frag) ==
+                                                        StructType::LoopCond
+                                                    ? frag
+                                                    : m_analyzer.getLoopHead(frag));
+                gotoSet.push_back(m_analyzer.getCondFollow(frag));
                 gotoTotal++;
 
                 // also add the current latch node, and the loop header of the follow if they exist
@@ -2150,51 +2362,52 @@ void CCodeGenerator::generateCode_Branch(const BasicBlock *bb,
                     gotoTotal++;
                 }
 
-                if (m_analyzer.getLoopHead(m_analyzer.getCondFollow(bb)) &&
-                    m_analyzer.getLoopHead(m_analyzer.getCondFollow(bb)) != myLoopHead) {
-                    gotoSet.push_back(m_analyzer.getLoopHead(m_analyzer.getCondFollow(bb)));
+                if (m_analyzer.getLoopHead(m_analyzer.getCondFollow(frag)) &&
+                    m_analyzer.getLoopHead(m_analyzer.getCondFollow(frag)) != myLoopHead) {
+                    gotoSet.push_back(m_analyzer.getLoopHead(m_analyzer.getCondFollow(frag)));
                     gotoTotal++;
                 }
             }
 
-            tmpCondFollow = bb->getSuccessor(
-                (m_analyzer.getCondType(bb) == CondType::IfThen) ? BELSE : BTHEN);
+            tmpCondFollow = frag->getSuccessor(
+                (m_analyzer.getCondType(frag) == CondType::IfThen) ? BELSE : BTHEN);
 
             // for a jump into a case, the temp follow is added to the follow set
-            if (m_analyzer.getUnstructType(bb) == UnstructType::JumpIntoCase) {
+            if (m_analyzer.getUnstructType(frag) == UnstructType::JumpIntoCase) {
                 followSet.push_back(tmpCondFollow);
             }
         }
     }
 
     // write the body of the block (excluding the predicate)
-    writeBB(bb);
+    writeFragment(frag);
 
     // write the conditional header
-    SwitchInfo *psi = nullptr; // Init to nullptr to suppress a warning
+    const SwitchInfo *psi = nullptr; // Init to nullptr to suppress a warning
 
-    if (m_analyzer.getCondType(bb) == CondType::Case) {
+    if (m_analyzer.getCondType(frag) == CondType::Case) {
         // The CaseStatement will be in the last RTL this BB
-        RTL *last         = bb->getRTLs()->back().get();
-        CaseStatement *cs = (CaseStatement *)last->getHlStmt();
-        psi               = cs->getSwitchInfo();
+        RTL *last                         = frag->getRTLs()->back().get();
+        std::shared_ptr<CaseStatement> cs = last->getHlStmt()->as<CaseStatement>();
+        psi                               = cs->getSwitchInfo();
 
         // Write the switch header (i.e. "switch (var) {")
+        assert(psi != nullptr);
         addCaseCondHeader(psi->switchExp);
     }
     else {
-        SharedExp cond = bb->getCond();
+        SharedExp cond = frag->getCond();
 
         if (!cond) {
             cond = Const::get(Address(0xfeedface)); // hack, but better than a crash
         }
 
-        if (m_analyzer.getCondType(bb) == CondType::IfElse) {
+        if (m_analyzer.getCondType(frag) == CondType::IfElse) {
             cond = Unary::get(opLNot, cond->clone());
             cond = cond->simplify();
         }
 
-        if (m_analyzer.getCondType(bb) == CondType::IfThenElse) {
+        if (m_analyzer.getCondType(frag) == CondType::IfThenElse) {
             addIfElseCondHeader(cond);
         }
         else {
@@ -2203,32 +2416,32 @@ void CCodeGenerator::generateCode_Branch(const BasicBlock *bb,
     }
 
     // write code for the body of the conditional
-    if (m_analyzer.getCondType(bb) != CondType::Case) {
-        const BasicBlock *succ = bb->getSuccessor(
-            (m_analyzer.getCondType(bb) == CondType::IfElse) ? BELSE : BTHEN);
+    if (m_analyzer.getCondType(frag) != CondType::Case) {
+        const IRFragment *succ = frag->getSuccessor(
+            (m_analyzer.getCondType(frag) == CondType::IfElse) ? BELSE : BTHEN);
         assert(succ != nullptr);
 
         // emit a goto statement if the first clause has already been
         // generated or it is the follow of this node's enclosing loop
-        if (isGenerated(succ) || (m_analyzer.getLoopHead(bb) &&
-                                  succ == m_analyzer.getLoopFollow(m_analyzer.getLoopHead(bb)))) {
-            emitGotoAndLabel(bb, succ);
+        if (isGenerated(succ) || (m_analyzer.getLoopHead(frag) &&
+                                  succ == m_analyzer.getLoopFollow(m_analyzer.getLoopHead(frag)))) {
+            emitGotoAndLabel(frag, succ);
         }
         else {
             generateCode(succ, latch, followSet, gotoSet, proc);
         }
 
         // generate the else clause if necessary
-        if (m_analyzer.getCondType(bb) == CondType::IfThenElse) {
+        if (m_analyzer.getCondType(frag) == CondType::IfThenElse) {
             // generate the 'else' keyword and matching brackets
             addIfElseCondOption();
 
-            succ = bb->getSuccessor(BELSE);
+            succ = frag->getSuccessor(BELSE);
 
             // emit a goto statement if the second clause has already
             // been generated
             if (isGenerated(succ)) {
-                emitGotoAndLabel(bb, succ);
+                emitGotoAndLabel(frag, succ);
             }
             else {
                 generateCode(succ, latch, followSet, gotoSet, proc);
@@ -2245,25 +2458,27 @@ void CCodeGenerator::generateCode_Branch(const BasicBlock *bb,
     else {
         // case header
 
-        // first, determine the optimal fall-through ordering
-        std::list<std::pair<SharedExp, const BasicBlock *>>
-            switchDests = computeOptimalCaseOrdering(bb, psi);
+        if (psi) {
+            // first, determine the optimal fall-through ordering
+            std::list<std::pair<SharedExp, const IRFragment *>>
+                switchDests = computeOptimalCaseOrdering(frag, psi);
 
-        for (auto it = switchDests.begin(); it != switchDests.end(); ++it) {
-            SharedExp caseValue    = it->first;
-            const BasicBlock *succ = it->second;
+            for (auto it = switchDests.begin(); it != switchDests.end(); ++it) {
+                SharedExp caseValue    = it->first;
+                const IRFragment *succ = it->second;
 
-            addCaseCondOption(*caseValue);
-            if (std::next(it) != switchDests.end() && std::next(it)->second == succ) {
-                // multiple case values; generate the BB only for the last case value
-                continue;
-            }
+                addCaseCondOption(caseValue);
+                if (std::next(it) != switchDests.end() && std::next(it)->second == succ) {
+                    // multiple case values; generate the BB only for the last case value
+                    continue;
+                }
 
-            if (isGenerated(succ)) {
-                emitGotoAndLabel(bb, succ);
-            }
-            else {
-                generateCode(succ, latch, followSet, gotoSet, proc);
+                if (isGenerated(succ)) {
+                    emitGotoAndLabel(frag, succ);
+                }
+                else {
+                    generateCode(succ, latch, followSet, gotoSet, proc);
+                }
             }
         }
 
@@ -2272,11 +2487,11 @@ void CCodeGenerator::generateCode_Branch(const BasicBlock *bb,
     }
 
     // do all the follow stuff if this conditional had one
-    if (m_analyzer.getCondFollow(bb)) {
+    if (m_analyzer.getCondFollow(frag)) {
         // remove the original follow from the follow set if it was
         // added by this header
-        if ((m_analyzer.getUnstructType(bb) == UnstructType::Structured) ||
-            (m_analyzer.getUnstructType(bb) == UnstructType::JumpIntoCase)) {
+        if ((m_analyzer.getUnstructType(frag) == UnstructType::Structured) ||
+            (m_analyzer.getUnstructType(frag) == UnstructType::JumpIntoCase)) {
             assert(gotoTotal == 0);
             followSet.resize(followSet.size() - 1);
         }
@@ -2287,11 +2502,11 @@ void CCodeGenerator::generateCode_Branch(const BasicBlock *bb,
         // do the code generation (or goto emitting) for the new conditional follow if it exists,
         // otherwise do it for the original follow
         if (!tmpCondFollow) {
-            tmpCondFollow = m_analyzer.getCondFollow(bb);
+            tmpCondFollow = m_analyzer.getCondFollow(frag);
         }
 
         if (isGenerated(tmpCondFollow)) {
-            emitGotoAndLabel(bb, tmpCondFollow);
+            emitGotoAndLabel(frag, tmpCondFollow);
         }
         else {
             generateCode(tmpCondFollow, latch, followSet, gotoSet, proc);
@@ -2300,31 +2515,33 @@ void CCodeGenerator::generateCode_Branch(const BasicBlock *bb,
 }
 
 
-void CCodeGenerator::generateCode_Seq(const BasicBlock *bb, std::list<const BasicBlock *> &gotoSet,
-                                      UserProc *proc, const BasicBlock *latch,
-                                      std::list<const BasicBlock *> &followSet)
+void CCodeGenerator::generateCode_Seq(const IRFragment *frag,
+                                      std::list<const IRFragment *> &gotoSet, UserProc *proc,
+                                      const IRFragment *latch,
+                                      std::list<const IRFragment *> &followSet)
 {
     // generate code for the body of this block
-    writeBB(bb);
+    writeFragment(frag);
 
     // return if this is the 'return' block (i.e. has no out edges) after emitting a 'return'
     // statement
-    if (bb->getType() == BBType::Ret) {
+    if (frag->isType(FragType::Ret)) {
         // This should be emitted now, like a normal statement
         // addReturnStatement(getReturnVal());
         return;
     }
 
     // return if this doesn't have any out edges (emit a warning)
-    if (bb->getNumSuccessors() == 0) {
-        LOG_WARN("No out edge for BB at address %1, in proc %2", bb->getLowAddr(), proc->getName());
+    if (frag->getNumSuccessors() == 0) {
+        LOG_WARN("No out edge for fragment at address %1, in proc %2", frag->getLowAddr(),
+                 proc->getName());
 
-        if (bb->getType() == BBType::CompJump) {
-            assert(!bb->getRTLs()->empty());
-            RTL *lastRTL = bb->getRTLs()->back().get();
+        if (frag->isType(FragType::CompJump)) {
+            assert(!frag->getRTLs()->empty());
+            RTL *lastRTL = frag->getRTLs()->back().get();
             assert(!lastRTL->empty());
 
-            GotoStatement *gs = static_cast<GotoStatement *>(lastRTL->back());
+            std::shared_ptr<GotoStatement> gs = lastRTL->back()->as<GotoStatement>();
             if (gs && gs->getDest()) {
                 addLineComment("goto " + gs->getDest()->toString());
             }
@@ -2336,25 +2553,25 @@ void CCodeGenerator::generateCode_Seq(const BasicBlock *bb, std::list<const Basi
         return;
     }
 
-    const BasicBlock *succ = bb->getSuccessor(0);
+    const IRFragment *succ = frag->getSuccessor(0);
 
-    if (bb->getNumSuccessors() > 1) {
-        const BasicBlock *other = bb->getSuccessor(1);
+    if (frag->getNumSuccessors() > 1) {
+        const IRFragment *other = frag->getSuccessor(1);
         LOG_MSG("Found seq with more than one outedge!");
-        std::shared_ptr<Const> constDest = bb->getDest()->access<Const>();
+        std::shared_ptr<Const> constDest = std::dynamic_pointer_cast<Const>(frag->getDest());
 
         if (constDest && constDest->isIntConst() && (constDest->getAddr() == succ->getLowAddr())) {
             std::swap(other, succ);
             LOG_MSG("Taken branch is first out edge");
         }
 
-        SharedExp cond = bb->getCond();
+        SharedExp cond = frag->getCond();
 
         if (cond) {
-            addIfCondHeader(bb->getCond());
+            addIfCondHeader(frag->getCond());
 
             if (isGenerated(other)) {
-                emitGotoAndLabel(bb, other);
+                emitGotoAndLabel(frag, other);
             }
             else {
                 generateCode(other, latch, followSet, gotoSet, proc);
@@ -2374,29 +2591,29 @@ void CCodeGenerator::generateCode_Seq(const BasicBlock *bb, std::list<const Basi
     // The only exception for generating it when it is not in
     // the same loop is when it is only reached from this node
     if (isGenerated(succ)) {
-        emitGotoAndLabel(bb, succ);
+        emitGotoAndLabel(frag, succ);
     }
-    else if (m_analyzer.getLoopHead(succ) != m_analyzer.getLoopHead(bb) &&
+    else if (m_analyzer.getLoopHead(succ) != m_analyzer.getLoopHead(frag) &&
              (!isAllParentsGenerated(succ) || Util::isContained(followSet, succ))) {
-        emitGotoAndLabel(bb, succ);
+        emitGotoAndLabel(frag, succ);
     }
     else if (latch && m_analyzer.getLoopHead(latch) &&
              (m_analyzer.getLoopFollow(m_analyzer.getLoopHead(latch)) == succ)) {
-        emitGotoAndLabel(bb, succ);
+        emitGotoAndLabel(frag, succ);
     }
-    else if (m_analyzer.getCaseHead(succ) && m_analyzer.getCaseHead(bb) &&
-             m_analyzer.getCaseHead(bb) != m_analyzer.getCaseHead(succ) &&
-             m_analyzer.getCondFollow(m_analyzer.getCaseHead(bb))) {
-        emitGotoAndLabel(bb, succ);
+    else if (m_analyzer.getCaseHead(succ) && m_analyzer.getCaseHead(frag) &&
+             m_analyzer.getCaseHead(frag) != m_analyzer.getCaseHead(succ) &&
+             m_analyzer.getCondFollow(m_analyzer.getCaseHead(frag))) {
+        emitGotoAndLabel(frag, succ);
     }
     else {
-        if (m_analyzer.getCaseHead(bb) &&
-            (succ == m_analyzer.getCondFollow(m_analyzer.getCaseHead(bb)))) {
+        if (m_analyzer.getCaseHead(frag) &&
+            (succ == m_analyzer.getCondFollow(m_analyzer.getCaseHead(frag)))) {
             // generate the 'break' statement
             addCaseCondOptionEnd();
         }
-        else if ((m_analyzer.getCaseHead(bb) == nullptr) ||
-                 (m_analyzer.getCaseHead(bb) != m_analyzer.getCaseHead(succ)) ||
+        else if ((m_analyzer.getCaseHead(frag) == nullptr) ||
+                 (m_analyzer.getCaseHead(frag) != m_analyzer.getCaseHead(succ)) ||
                  !m_analyzer.isCaseOption(succ)) {
             generateCode(succ, latch, followSet, gotoSet, proc);
         }
@@ -2404,21 +2621,21 @@ void CCodeGenerator::generateCode_Seq(const BasicBlock *bb, std::list<const Basi
 }
 
 
-void CCodeGenerator::emitGotoAndLabel(const BasicBlock *bb, const BasicBlock *dest)
+void CCodeGenerator::emitGotoAndLabel(const IRFragment *frag, const IRFragment *dest)
 {
-    if (m_analyzer.getLoopHead(bb) &&
-        ((m_analyzer.getLoopHead(bb) == dest) ||
-         (m_analyzer.getLoopFollow(m_analyzer.getLoopHead(bb)) == dest))) {
-        if (m_analyzer.getLoopHead(bb) == dest) {
+    if (m_analyzer.getLoopHead(frag) &&
+        ((m_analyzer.getLoopHead(frag) == dest) ||
+         (m_analyzer.getLoopFollow(m_analyzer.getLoopHead(frag)) == dest))) {
+        if (m_analyzer.getLoopHead(frag) == dest) {
             addContinue();
         }
         else {
             addBreak();
         }
     }
-    else if (dest->isType(BBType::Ret)) {
+    else if (dest->isType(FragType::Ret)) {
         // a goto to a return -> just emit the return statement
-        writeBB(dest);
+        writeFragment(dest);
     }
     else {
         addGoto(dest);
@@ -2426,23 +2643,23 @@ void CCodeGenerator::emitGotoAndLabel(const BasicBlock *bb, const BasicBlock *de
 }
 
 
-void CCodeGenerator::writeBB(const BasicBlock *bb)
+void CCodeGenerator::writeFragment(const IRFragment *frag)
 {
     if (m_proc->getProg()->getProject()->getSettings()->debugGen) {
-        LOG_MSG("Generating code for BB at address %1", bb->getLowAddr());
+        LOG_MSG("Generating code for fragment at address %1", frag->getLowAddr());
     }
 
     // Allocate space for a label to be generated for this node and add this to the generated code.
     // The actual label can then be generated now or back patched later
-    addLabel(bb);
+    addLabel(frag);
 
-    if (bb->getRTLs()) {
-        for (const auto &rtl : *(bb->getRTLs())) {
+    if (frag->getRTLs()) {
+        for (const auto &rtl : *(frag->getRTLs())) {
             if (m_proc->getProg()->getProject()->getSettings()->debugGen) {
                 LOG_MSG("%1", rtl->getAddress());
             }
 
-            for (const Statement *st : *rtl) {
+            for (const SharedStmt &st : *rtl) {
                 emitCodeForStmt(st);
             }
         }
@@ -2459,10 +2676,7 @@ void CCodeGenerator::print(const Module *module)
 
 void CCodeGenerator::indent(OStream &str, int indLevel)
 {
-    // Can probably do more efficiently
-    for (int i = 0; i < indLevel; i++) {
-        str << "    ";
-    }
+    str << QString(4 * indLevel, ' ');
 }
 
 
@@ -2472,10 +2686,10 @@ void CCodeGenerator::appendLine(const QString &s)
 }
 
 
-bool CCodeGenerator::isAllParentsGenerated(const BasicBlock *bb) const
+bool CCodeGenerator::isAllParentsGenerated(const IRFragment *frag) const
 {
-    for (BasicBlock *pred : bb->getPredecessors()) {
-        if (!m_analyzer.isBackEdge(pred, bb) && !isGenerated(pred)) {
+    for (IRFragment *pred : frag->getPredecessors()) {
+        if (!m_analyzer.isBackEdge(pred, frag) && !isGenerated(pred)) {
             return false;
         }
     }
@@ -2484,25 +2698,31 @@ bool CCodeGenerator::isAllParentsGenerated(const BasicBlock *bb) const
 }
 
 
-bool CCodeGenerator::isGenerated(const BasicBlock *bb) const
+bool CCodeGenerator::isGenerated(const IRFragment *frag) const
 {
-    return m_generatedBBs.find(bb) != m_generatedBBs.end();
+    // 4 spaces per level
+    return m_generatedFrags.find(frag) != m_generatedFrags.end();
 }
 
 
-void CCodeGenerator::emitCodeForStmt(const Statement *st)
+void CCodeGenerator::emitCodeForStmt(const SharedConstStmt &st)
 {
     switch (st->getKind()) {
     case StmtType::Assign: {
-        this->addAssignmentStatement(static_cast<const Assign *>(st));
+        this->addAssignmentStatement(st->as<const Assign>());
         break;
     }
     case StmtType::Call: {
-        const CallStatement *call = static_cast<const CallStatement *>(st);
-        const Function *dest      = call->getDestProc();
+        std::shared_ptr<const CallStatement> call = st->as<const CallStatement>();
+        const Function *dest                      = call->getDestProc();
 
-        if ((dest == nullptr) && call->isComputed()) {
-            addIndCallStatement(call->getDest(), call->getArguments(), *call->calcResults());
+        if (dest == nullptr) {
+            if (call->isComputed()) {
+                addIndCallStatement(call->getDest(), call->getArguments(), *call->calcResults());
+            }
+            else {
+                addLineComment(QString("call %1").arg(call->getDest()->toString()));
+            }
             return;
         }
 
@@ -2519,38 +2739,43 @@ void CCodeGenerator::emitCodeForStmt(const Statement *st)
         break;
     }
     case StmtType::Ret: {
-        addReturnStatement(&static_cast<const ReturnStatement *>(st)->getReturns());
+        addReturnStatement(&st->as<const ReturnStatement>()->getReturns());
         break;
     }
     case StmtType::BoolAssign: {
-        const BoolAssign *bas = static_cast<const BoolAssign *>(st);
+        std::shared_ptr<const BoolAssign> bas = st->as<const BoolAssign>();
 
         // lhs := (m_cond) ? 1 : 0
-        Assign as(bas->getLeft()->clone(),
-                  Ternary::get(opTern, bas->getCondExpr()->clone(), Const::get(1), Const::get(0)));
-        addAssignmentStatement(&as);
+        std::shared_ptr<Assign> as = std::make_shared<Assign>(
+            bas->getLeft()->clone(),
+            Ternary::get(opTern, bas->getCondExpr()->clone(), Const::get(1), Const::get(0)));
+        addAssignmentStatement(as);
         break;
     }
     case StmtType::Branch:
     case StmtType::Goto:
     case StmtType::Case:
-        // these will be handled by the BB
+        // these will be handled by the fragment
         break;
-    case StmtType::PhiAssign: LOG_ERROR("Encountered Phi Assign in back end"); break;
-    case StmtType::ImpAssign: LOG_ERROR("Encountered Implicit Assign in back end"); break;
-    case StmtType::INVALID: LOG_ERROR("Encountered Invalid Statement in back end"); break;
+    case StmtType::PhiAssign: LOG_VERBOSE("Encountered Phi Assign in back end"); break;
+    case StmtType::ImpAssign: LOG_VERBOSE("Encountered Implicit Assign in back end"); break;
+    case StmtType::INVALID: LOG_VERBOSE("Encountered Invalid Statement in back end"); break;
     }
 }
 
 
-std::list<std::pair<SharedExp, const BasicBlock *>>
-CCodeGenerator::computeOptimalCaseOrdering(const BasicBlock *caseHead, SwitchInfo *psi)
+std::list<std::pair<SharedExp, const IRFragment *>>
+CCodeGenerator::computeOptimalCaseOrdering(const IRFragment *caseHead, const SwitchInfo *psi)
 {
-    using CaseEntry = std::pair<SharedExp, const BasicBlock *>;
+    if (!caseHead) {
+        return {};
+    }
+
+    using CaseEntry = std::pair<SharedExp, const IRFragment *>;
     std::list<CaseEntry> result;
 
     for (int i = 0; i < caseHead->getNumSuccessors(); ++i) {
-        const BasicBlock *origSucc = caseHead->getSuccessor(i);
+        const IRFragment *origSucc = caseHead->getSuccessor(i);
         SharedExp caseVal;
         if (psi->switchType == SwitchType::F) { // "Fortran" style?
             // Yes, use the table value itself
@@ -2561,24 +2786,26 @@ CCodeGenerator::computeOptimalCaseOrdering(const BasicBlock *caseHead, SwitchInf
             caseVal = Const::get(static_cast<int>(psi->lowerBound + i));
         }
 
-        const BasicBlock *realSucc = origSucc;
-        while (realSucc->getNumSuccessors() == 1 &&
+        const IRFragment *realSucc = origSucc;
+        while (realSucc && realSucc->getNumSuccessors() == 1 &&
                (realSucc->isEmpty() || realSucc->isEmptyJump())) {
             realSucc = realSucc->getSuccessor(0);
         }
 
-        result.push_back({ caseVal, realSucc });
+        if (realSucc) {
+            result.push_back({ caseVal, realSucc });
+        }
     }
 
     result.sort([](const CaseEntry &left, const CaseEntry &right) {
-        const BasicBlock *leftBB  = left.second;
-        const BasicBlock *rightBB = right.second;
+        const IRFragment *leftFrag  = left.second;
+        const IRFragment *rightFrag = right.second;
 
-        const BasicBlock *leftSucc = leftBB;
+        const IRFragment *leftSucc = leftFrag;
 
-        while (leftSucc->getType() != BBType::Ret) {
-            if (leftSucc == rightBB) {
-                return true; // the left case is a fallthrough to the right case
+        while (leftSucc->getType() != FragType::Ret) {
+            if (leftSucc == rightFrag) {
+                return leftFrag != rightFrag; // the left case is a fallthrough to the right case
             }
             else if (leftSucc->getNumSuccessors() != 1) {
                 break;
@@ -2587,8 +2814,20 @@ CCodeGenerator::computeOptimalCaseOrdering(const BasicBlock *caseHead, SwitchInf
             leftSucc = leftSucc->getSuccessor(0);
         }
 
+        const IRFragment *rightSucc = rightFrag;
+        while (rightSucc->getType() != FragType::Ret) {
+            if (rightSucc == leftFrag) {
+                return leftFrag != rightFrag; // the right case is a fallthrough to the left case
+            }
+            else if (rightSucc->getNumSuccessors() != 1) {
+                break;
+            }
+
+            rightSucc = rightSucc->getSuccessor(0);
+        }
+
         // No fallthrough found; compare by address
-        return leftBB->getLowAddr() < rightBB->getLowAddr();
+        return leftFrag->getLowAddr() < rightFrag->getLowAddr();
     });
 
     return result;

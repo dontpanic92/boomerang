@@ -23,6 +23,17 @@
 #include "boomerang/visitor/expmodifier/ImplicitConverter.h"
 
 
+bool compareUserProc(const UserProc *lhs, const UserProc *rhs)
+{
+    if (lhs && rhs) {
+        return lhs->getEntryAddress() < rhs->getEntryAddress();
+    }
+    else {
+        return lhs < rhs;
+    }
+}
+
+
 UnusedReturnRemover::UnusedReturnRemover(Prog *prog)
     : m_prog(prog)
 {
@@ -41,12 +52,13 @@ bool UnusedReturnRemover::removeUnusedReturns()
     }
 
     bool change = false;
-    // The workset is processed in arbitrary order. May be able to do better,
-    // but note that sometimes changes propagate down the call tree
+    // The workset is processed in order of entry address. This is to provide a consistent
+    // deterministic order of processing. Note that sometimes changes propagate down the call tree
     // (no caller uses potential returns for child), and sometimes up the call tree
     // (removal of returns and/or dead code removes parameters, which affects all callers).
     while (!m_removeRetSet.empty()) {
-        auto it                   = m_removeRetSet.begin(); // Pick the first element of the set
+        auto it = std::min_element(m_removeRetSet.begin(), m_removeRetSet.end(), compareUserProc);
+        assert(*it != nullptr);
         const bool removedReturns = removeUnusedParamsAndReturns(*it);
 
         if (removedReturns) {
@@ -87,45 +99,7 @@ bool UnusedReturnRemover::removeUnusedParamsAndReturns(UserProc *proc)
     }
 
     if (proc->getSignature()->isForced()) {
-        // Respect the forced signature, but use it to remove returns if necessary
-        bool removedRets = false;
-
-        for (auto retIt = proc->getRetStmt()->begin(); retIt != proc->getRetStmt()->end();) {
-            assert(*retIt != nullptr && (*retIt)->isAssign());
-            Assign *retDef = static_cast<Assign *>(*retIt);
-            SharedExp lhs  = retDef->getLeft();
-
-            // For each location in the returns, check if in the signature
-            bool found = false;
-
-            for (int i = 0; i < proc->getSignature()->getNumReturns(); i++) {
-                if (*proc->getSignature()->getReturnExp(i) == *lhs) {
-                    found = true;
-                    break;
-                }
-            }
-
-            if (found) {
-                ++retIt; // Yes, in signature; OK
-            }
-            else {
-                if (m_prog->getProject()->getSettings()->debugUnused) {
-                    LOG_MSG("%%%  removing unused return %1 from proc %2 (forced signature)",
-                            retDef, proc->getName());
-                }
-
-                // This return is not in the signature. Remove it
-                retIt       = proc->getRetStmt()->erase(retIt);
-                removedRets = true;
-            }
-        }
-
-        if (removedRets) {
-            // Still may have effects on calls or now unused statements
-            updateForUseChange(proc);
-        }
-
-        return removedRets;
+        return removeReturnsToMatchSignature(proc);
     }
 
     // FIXME: this needs to be more sensible when we don't decompile down from main! Probably should
@@ -133,8 +107,8 @@ bool UnusedReturnRemover::removeUnusedParamsAndReturns(UserProc *proc)
     LocationSet unionOfCallerLiveLocs;
 
     if (proc->getName() == "main") { // Probably not needed: main is forced so handled above
-        // Just insert one return for main. Note: at present, the first parameter is still the stack
-        // pointer
+        // Just insert one return for main.
+        // Note: at present, the first parameter is still the stack pointer
         if (proc->getSignature()->getNumReturns() <= 1) {
             // handle the case of missing main() signature
             LOG_WARN("main signature definition is missing; assuming void main()");
@@ -144,10 +118,16 @@ bool UnusedReturnRemover::removeUnusedParamsAndReturns(UserProc *proc)
         }
     }
     else {
-        for (CallStatement *cc : proc->getCallers()) {
-            // TODO: prevent function from blocking its own removals
+        for (std::shared_ptr<CallStatement> cc : proc->getCallers()) {
+            // Prevent function from blocking its own removals
+            // TODO This only handles self-recursion. More analysis and testing is necessary
+            // for mutual recursion. (-> cc->getProc()->doesRecurseTo(proc))
+            if (cc->getProc() == proc) {
+                continue;
+            }
+
             UseCollector *useCol = cc->getUseCollector();
-            unionOfCallerLiveLocs.makeUnion(useCol->getLocSet());
+            unionOfCallerLiveLocs.makeUnion(useCol->getUses());
         }
     }
 
@@ -155,7 +135,7 @@ bool UnusedReturnRemover::removeUnusedParamsAndReturns(UserProc *proc)
     bool removedRets = false;
 
     for (auto retIt = proc->getRetStmt()->begin(); retIt != proc->getRetStmt()->end();) {
-        Assign *retDef = static_cast<Assign *>(*retIt);
+        std::shared_ptr<Assign> retDef = (*retIt)->as<Assign>();
 
         // Check if the location defined by the return is actually used by any callee.
         if (unionOfCallerLiveLocs.contains(retDef->getLeft())) {
@@ -190,7 +170,7 @@ bool UnusedReturnRemover::removeUnusedParamsAndReturns(UserProc *proc)
 
     if (removedParams || removedRets) {
         // Update the statements that call us
-        for (CallStatement *call : proc->getCallers()) {
+        for (std::shared_ptr<CallStatement> call : proc->getCallers()) {
             PassManager::get()->executePass(PassID::CallArgumentUpdate, proc);
             updateSet.insert(call->getProc());      // Make sure we redo the dataflow
             m_removeRetSet.insert(call->getProc()); // Also schedule caller proc for more analysis
@@ -226,22 +206,18 @@ void UnusedReturnRemover::updateForUseChange(UserProc *proc)
 
     // Save the old parameters and call liveness
     const size_t oldNumParameters = proc->getParameters().size();
-    std::map<CallStatement *, UseCollector> callLiveness;
+    std::map<std::shared_ptr<CallStatement>, UseCollector> callLiveness;
 
-    for (BasicBlock *bb : *proc->getCFG()) {
-        BasicBlock::RTLRIterator rrit;
-        StatementList::reverse_iterator srit;
-        CallStatement *c = dynamic_cast<CallStatement *>(bb->getLastStmt(rrit, srit));
+    for (IRFragment *frag : *proc->getCFG()) {
+        const SharedStmt last = frag->getLastStmt();
 
-        // Note: we may have removed some statements, so there may no longer be a last statement!
-        if (c == nullptr) {
+        if (!last || !last->isCall()) {
             continue;
         }
 
-        UserProc *dest = dynamic_cast<UserProc *>(c->getDestProc());
-
         // Not interested in unanalysed indirect calls (not sure) or calls to lib procs
-        if (dest == nullptr) {
+        std::shared_ptr<CallStatement> c = last->as<CallStatement>();
+        if (!c->getDestProc() || c->getDestProc()->isLib()) {
             continue;
         }
 
@@ -264,10 +240,6 @@ void UnusedReturnRemover::updateForUseChange(UserProc *proc)
 
         PassManager::get()->executePass(PassID::BlockVarRename, proc); // Rename the locals
         PassManager::get()->executePass(PassID::StatementPropagation, proc);
-
-        if (m_prog->getProject()->getSettings()->verboseOutput) {
-            proc->debugPrintAll("after propagating locals");
-        }
     }
 
     PassManager::get()->executePass(PassID::UnusedStatementRemoval, proc);
@@ -277,7 +249,6 @@ void UnusedReturnRemover::updateForUseChange(UserProc *proc)
         // Replace the existing temporary parameters with the final ones:
         // mapExpressionsToParameters();
         PassManager::get()->executePass(PassID::ParameterSymbolMap, proc);
-        proc->debugPrintAll("after adding new parameters");
     }
 
     // Or just CallArgumentUpdate?
@@ -293,11 +264,10 @@ void UnusedReturnRemover::updateForUseChange(UserProc *proc)
             LOG_MSG("%%%  parameters changed for %1", proc->getName());
         }
 
-        std::set<CallStatement *> &callers = proc->getCallers();
-        const bool experimental            = m_prog->getProject()->getSettings()->experimental;
+        std::set<std::shared_ptr<CallStatement>> &callers = proc->getCallers();
 
-        for (CallStatement *cc : callers) {
-            cc->updateArguments(experimental);
+        for (std::shared_ptr<CallStatement> cc : callers) {
+            cc->updateArguments();
             // Schedule the callers for analysis
             m_removeRetSet.insert(cc->getProc());
         }
@@ -316,4 +286,48 @@ void UnusedReturnRemover::updateForUseChange(UserProc *proc)
             m_removeRetSet.insert(static_cast<UserProc *>(call->getDestProc()));
         }
     }
+}
+
+
+bool UnusedReturnRemover::removeReturnsToMatchSignature(UserProc *proc)
+{
+    // Respect the forced signature, but use it to remove returns if necessary
+    bool removedRets = false;
+
+    for (auto retIt = proc->getRetStmt()->begin(); retIt != proc->getRetStmt()->end();) {
+        assert(*retIt != nullptr && (*retIt)->isAssign());
+        std::shared_ptr<Assign> retDef = (*retIt)->as<Assign>();
+        const SharedExp lhs            = retDef->getLeft();
+
+        // For each location in the returns, check if in the signature
+        bool found = false;
+
+        for (int i = 0; i < proc->getSignature()->getNumReturns(); i++) {
+            if (*proc->getSignature()->getReturnExp(i) == *lhs) {
+                found = true;
+                break;
+            }
+        }
+
+        if (found) {
+            ++retIt; // Yes, in signature; OK
+        }
+        else {
+            if (m_prog->getProject()->getSettings()->debugUnused) {
+                LOG_MSG("%%%  removing unused return %1 from proc %2 (forced signature)", retDef,
+                        proc->getName());
+            }
+
+            // This return is not in the signature. Remove it
+            retIt       = proc->getRetStmt()->erase(retIt);
+            removedRets = true;
+        }
+    }
+
+    if (removedRets) {
+        // Still may have effects on calls or now unused statements
+        updateForUseChange(proc);
+    }
+
+    return removedRets;
 }

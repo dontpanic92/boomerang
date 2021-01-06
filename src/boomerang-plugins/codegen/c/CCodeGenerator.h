@@ -15,6 +15,7 @@
 
 #include "boomerang/core/BoomerangAPI.h"
 #include "boomerang/ifc/ICodeGenerator.h"
+#include "boomerang/ssl/statements/Statement.h"
 #include "boomerang/ssl/type/Type.h"
 #include "boomerang/util/Address.h"
 
@@ -25,7 +26,7 @@
 #include <unordered_set>
 
 
-class BasicBlock;
+class IRFragment;
 class Exp;
 class LocationSet;
 class BinaryImage;
@@ -89,7 +90,7 @@ class BOOMERANG_PLUGIN_API CCodeGenerator : public ICodeGenerator
 {
 public:
     CCodeGenerator(Project *project);
-    virtual ~CCodeGenerator() override = default;
+    ~CCodeGenerator() override = default;
 
 public:
     /// \copydoc ICodeGenerator::generateCode
@@ -98,7 +99,7 @@ public:
 
 private:
     /// Add an assignment statement at the current position.
-    void addAssignmentStatement(const Assign *assign);
+    void addAssignmentStatement(const std::shared_ptr<const Assign> &assign);
 
     /**
      * Adds a call to the function \p proc.
@@ -154,7 +155,7 @@ private:
      * Functions to add new code
      */
 
-    // pretested loops (cond is optional because it is in the bb [somewhere])
+    // pretested loops (cond is optional because it is in the fragment [somewhere])
     /// Adds: while (\p cond) {
     void addPretestedLoopHeader(const SharedExp &cond);
 
@@ -173,14 +174,14 @@ private:
     void addPostTestedLoopHeader();
 
     /// Adds: } while (\a cond);
-    void addPostTestedLoopEnd(const SharedExp &cond);
+    void addPostTestedLoopEnd(const SharedConstExp &cond);
 
     // case conditionals "nways"
     /// Adds: switch(\a cond) {
-    void addCaseCondHeader(const SharedExp &cond);
+    void addCaseCondHeader(const SharedConstExp &cond);
 
     /// Adds: case \a opt :
-    void addCaseCondOption(Exp &opt);
+    void addCaseCondOption(const SharedConstExp &opt);
 
     /// Adds: break;
     void addCaseCondOptionEnd();
@@ -193,14 +194,14 @@ private:
 
     // if conditions
     /// Adds: if(\a cond) {
-    void addIfCondHeader(const SharedExp &cond);
+    void addIfCondHeader(const SharedConstExp &cond);
 
     /// Adds: }
     void addIfCondEnd();
 
     // if else conditions
     /// Adds: if(\a cond) {
-    void addIfElseCondHeader(const SharedExp &cond);
+    void addIfElseCondHeader(const SharedConstExp &cond);
 
     /// Adds: } else {
     void addIfElseCondOption();
@@ -209,7 +210,7 @@ private:
     void addIfElseCondEnd();
 
     // goto, break, continue, etc
-    void addGoto(const BasicBlock *bb);
+    void addGoto(const IRFragment *frag);
 
     /// Adds: continue;
     void addContinue();
@@ -219,7 +220,7 @@ private:
 
     // labels
     /// Adds: L \a ord :
-    void addLabel(const BasicBlock *bb);
+    void addLabel(const IRFragment *frag);
 
     // proc related
     /**
@@ -261,7 +262,8 @@ private:
      *
      * \todo This function is 800+ lines, and should possibly be split up.
      */
-    void appendExp(OStream &str, const Exp &exp, OpPrec curPrec, bool allowUnsigned = false);
+    void appendExp(OStream &str, const SharedConstExp &exp, OpPrec curPrec,
+                   bool allowUnsigned = false);
 
     /// Print the type represented by \a typ to \a str.
     void appendType(OStream &str, SharedConstType typ);
@@ -278,34 +280,34 @@ private:
     void closeParen(OStream &str, OpPrec outer, OpPrec inner);
 
 
-    void generateCode(const BasicBlock *bb, const BasicBlock *latch,
-                      std::list<const BasicBlock *> &followSet,
-                      std::list<const BasicBlock *> &gotoSet, UserProc *proc);
-    void generateCode_Loop(const BasicBlock *bb, std::list<const BasicBlock *> &gotoSet,
-                           UserProc *proc, const BasicBlock *latch,
-                           std::list<const BasicBlock *> &followSet);
-    void generateCode_Branch(const BasicBlock *bb, std::list<const BasicBlock *> &gotoSet,
-                             UserProc *proc, const BasicBlock *latch,
-                             std::list<const BasicBlock *> &followSet);
-    void generateCode_Seq(const BasicBlock *bb, std::list<const BasicBlock *> &gotoSet,
-                          UserProc *proc, const BasicBlock *latch,
-                          std::list<const BasicBlock *> &followSet);
+    void generateCode(const IRFragment *frag, const IRFragment *latch,
+                      std::list<const IRFragment *> &followSet,
+                      std::list<const IRFragment *> &gotoSet, UserProc *proc);
+    void generateCode_Loop(const IRFragment *frag, std::list<const IRFragment *> &gotoSet,
+                           UserProc *proc, const IRFragment *latch,
+                           std::list<const IRFragment *> &followSet);
+    void generateCode_Branch(const IRFragment *frag, std::list<const IRFragment *> &gotoSet,
+                             UserProc *proc, const IRFragment *latch,
+                             std::list<const IRFragment *> &followSet);
+    void generateCode_Seq(const IRFragment *frag, std::list<const IRFragment *> &gotoSet,
+                          UserProc *proc, const IRFragment *latch,
+                          std::list<const IRFragment *> &followSet);
 
     /// Emits a goto statement (at the correct indentation level) with the destination label for
     /// dest. Also places the label just before the destination code if it isn't already there. If
-    /// the goto is to the return block, it would be nice to emit a 'return' instead (but would have
-    /// to duplicate the other code in that return BB).    Also, 'continue' and 'break' statements
-    /// are used instead if possible
-    void emitGotoAndLabel(const BasicBlock *bb, const BasicBlock *dest);
+    /// the goto is to the return block, it would be nice to emit a 'return' instead
+    /// (but would have to duplicate the other code in that return fragment).
+    /// Also, 'continue' and 'break' statements are used instead if possible
+    void emitGotoAndLabel(const IRFragment *frag, const IRFragment *dest);
 
     /// Generates code for each non-CTI (except procedure calls) statement within the block.
-    void writeBB(const BasicBlock *bb);
+    void writeFragment(const IRFragment *frag);
 
-    /// \returns true if all predecessors of this BB have had their code generated.
-    bool isAllParentsGenerated(const BasicBlock *bb) const;
-    bool isGenerated(const BasicBlock *bb) const;
+    /// \returns true if all predecessors of this fragment have had their code generated.
+    bool isAllParentsGenerated(const IRFragment *frag) const;
+    bool isGenerated(const IRFragment *frag) const;
 
-    void emitCodeForStmt(const Statement *stmt);
+    void emitCodeForStmt(const SharedConstStmt &stmt);
 
     /**
      * Computes the optimal case ordering of switch statements.
@@ -314,8 +316,8 @@ private:
      * The value or the case label is determined by the value of the first part of the pair,
      * the jump destination for the case is determined by the second part of the pair.
      */
-    std::list<std::pair<SharedExp, const BasicBlock *>>
-    computeOptimalCaseOrdering(const BasicBlock *caseHead, SwitchInfo *switchInfo);
+    std::list<std::pair<SharedExp, const IRFragment *>>
+    computeOptimalCaseOrdering(const IRFragment *caseHead, const SwitchInfo *switchInfo);
 
 private:
     void print(const Module *module);
@@ -328,10 +330,12 @@ private:
     void appendLine(const QString &s);
 
 private:
-    int m_indent = 0;                                     ///< Current indentation depth
-    std::map<QString, SharedType> m_locals;               ///< All locals in a Proc
-    std::unordered_set<Address::value_type> m_usedLabels; ///< All used goto labels. (lowAddr of BB)
-    std::unordered_set<const BasicBlock *> m_generatedBBs;
+    /// Current indentation depth
+    int m_indent = 0;
+
+    /// All used goto labels. (lowAddr of fragment)
+    std::unordered_set<Address::value_type> m_usedLabels;
+    std::unordered_set<const IRFragment *> m_generatedFrags;
 
     UserProc *m_proc = nullptr;
     ControlFlowAnalyzer m_analyzer;

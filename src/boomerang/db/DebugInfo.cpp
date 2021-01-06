@@ -70,6 +70,12 @@ SharedType makeUDT(int index, DWORD64 ModBase)
     int FindChildrenSize = sizeof(dbghelp::TI_FINDCHILDREN_PARAMS) + count * sizeof(ULONG);
     dbghelp::TI_FINDCHILDREN_PARAMS *pFC = (dbghelp::TI_FINDCHILDREN_PARAMS *)malloc(
         FindChildrenSize);
+
+    if (pFC == nullptr) {
+        // not enough memory for types, discard information (not usable)
+        return nullptr;
+    }
+
     memset(pFC, 0, FindChildrenSize);
     pFC->Count = count;
     SymGetTypeInfo(hProcess, ModBase, index, dbghelp::TI_FINDCHILDREN, pFC);
@@ -162,9 +168,9 @@ SharedType typeFromDebugInfo(int index, DWORD64 ModBase)
 int debugRegister(int r)
 {
     switch (r) {
-    case 2: return REG_PENT_EDX;
-    case 4: return REG_PENT_ECX;
-    case 8: return REG_PENT_EBP;
+    case 2: return REG_X86_EDX;
+    case 4: return REG_X86_ECX;
+    case 8: return REG_X86_EBP;
     }
 
     assert(false);
@@ -183,7 +189,7 @@ BOOL CALLBACK addSymbol(dbghelp::PSYMBOL_INFO symInfo, ULONG /*SymbolSize*/, PVO
             assert(symInfo->Register == 8); // ebp
             proc->getSignature()->addParameter(
                 symInfo->Name,
-                Location::memOf(Binary::get(opPlus, Location::regOf(REG_PENT_ESP),
+                Location::memOf(Binary::get(opPlus, Location::regOf(REG_X86_ESP),
                                             Const::get((int)symInfo->Address - 4))),
                 ty);
         }
@@ -196,7 +202,7 @@ BOOL CALLBACK addSymbol(dbghelp::PSYMBOL_INFO symInfo, ULONG /*SymbolSize*/, PVO
         UserProc *uproc = static_cast<UserProc *>(proc);
         assert(symInfo->Flags & SYMFLAG_REGREL);
         assert(symInfo->Register == 8);
-        SharedExp memref = Location::memOf(Binary::get(opMinus, Location::regOf(REG_PENT_ESP),
+        SharedExp memref = Location::memOf(Binary::get(opMinus, Location::regOf(REG_X86_ESP),
                                                        Const::get(-((int)symInfo->Address - 4))));
         SharedType ty    = typeFromDebugInfo(symInfo->TypeIndex, symInfo->ModBase);
         uproc->addLocal(ty, symInfo->Name, memref);
@@ -214,10 +220,16 @@ SharedType typeFromDebugInfo(const QString &name, Address addr)
 #if defined(_WIN32) && !defined(__MINGW32__)
     HANDLE hProcess           = GetCurrentProcess();
     dbghelp::SYMBOL_INFO *sym = (dbghelp::SYMBOL_INFO *)malloc(sizeof(dbghelp::SYMBOL_INFO) + 1000);
-    sym->SizeOfStruct         = sizeof(*sym);
-    sym->MaxNameLen           = 1000;
-    sym->Name[0]              = 0;
-    BOOL got                  = dbghelp::SymFromAddr(hProcess, addr.value(), 0, sym);
+
+    if (sym == nullptr) {
+        // not enough memory for symbol information, discard it
+        return nullptr;
+    }
+
+    sym->SizeOfStruct = sizeof(*sym);
+    sym->MaxNameLen   = 1000;
+    sym->Name[0]      = 0;
+    BOOL got          = dbghelp::SymFromAddr(hProcess, addr.value(), 0, sym);
 
     if (got && *sym->Name && sym->TypeIndex) {
         assert(name == sym->Name);

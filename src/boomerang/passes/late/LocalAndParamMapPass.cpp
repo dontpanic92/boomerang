@@ -25,15 +25,12 @@ LocalAndParamMapPass::LocalAndParamMapPass()
 
 bool LocalAndParamMapPass::execute(UserProc *proc)
 {
-    proc->getProg()->getProject()->alertDecompileDebugPoint(
-        proc, "Before mapping locals from dfa type analysis");
-
     LOG_VERBOSE("### Mapping expressions to local variables for %1 ###", proc->getName());
 
     StatementList stmts;
     proc->getStatements(stmts);
 
-    for (Statement *s : stmts) {
+    for (SharedStmt s : stmts) {
         DfaLocalMapper dlm(proc);
         StmtModifier sm(&dlm, true); // True to ignore def collector in return statement
 

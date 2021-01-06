@@ -10,6 +10,10 @@
 #pragma once
 
 
+#include <algorithm>
+#include <utility>
+
+
 /**
  * Class for right-open intervals.
  */

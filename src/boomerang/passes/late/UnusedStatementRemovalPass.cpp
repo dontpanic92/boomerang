@@ -27,19 +27,20 @@ UnusedStatementRemovalPass::UnusedStatementRemovalPass()
 
 bool UnusedStatementRemovalPass::execute(UserProc *proc)
 {
+    Project *project = proc->getProg()->getProject();
+    if (!project->getSettings()->removeNull) {
+        return false;
+    }
+
     // Only remove unused statements after decompiling as much as possible of the proc
-    // Remove unused statements
-    RefCounter refCounts; // The map
+    RefCounter refCounts;
     // Count the references first
     updateRefCounts(proc, refCounts);
 
-    // Now remove any that have no used
-    if (proc->getProg()->getProject()->getSettings()->removeNull) {
-        remUnusedStmtEtc(proc, refCounts);
-        removeNullStatements(proc);
-        proc->debugPrintAll("after removing unused and null statements pass 1");
-    }
+    remUnusedStmtEtc(proc, refCounts);
+    removeNullStatements(proc);
 
+    project->alertDecompileDebugPoint(proc, "after removing unused and null statements");
     return true;
 }
 
@@ -49,7 +50,7 @@ void UnusedStatementRemovalPass::updateRefCounts(UserProc *proc, RefCounter &ref
     StatementList stmts;
     proc->getStatements(stmts);
 
-    for (Statement *s : stmts) {
+    for (SharedStmt s : stmts) {
         // Don't count uses in implicit statements. There is no RHS of course,
         // but you can still have x from m[x] on the LHS and so on, but these are not real uses
         if (s->isImplicit()) {
@@ -65,7 +66,7 @@ void UnusedStatementRemovalPass::updateRefCounts(UserProc *proc, RefCounter &ref
 
         for (const SharedExp &rr : refs) {
             if (rr->isSubscript()) {
-                Statement *def = rr->access<RefExp>()->getDef();
+                SharedStmt def = rr->access<RefExp>()->getDef();
 
                 // Used to not count implicit refs here (def->getNumber() == 0), meaning that
                 // implicit definitions get removed as dead code! But these are the ideal place to
@@ -105,7 +106,7 @@ void UnusedStatementRemovalPass::remUnusedStmtEtc(UserProc *proc, RefCounter &re
         StatementList::iterator ll = stmts.begin();
 
         while (ll != stmts.end()) {
-            Statement *s = *ll;
+            SharedStmt s = *ll;
 
             if (!s->isAssignment()) {
                 // Never delete a statement other than an assignment (e.g. nothing "uses" a Jcond)
@@ -113,8 +114,8 @@ void UnusedStatementRemovalPass::remUnusedStmtEtc(UserProc *proc, RefCounter &re
                 continue;
             }
 
-            const Assignment *as  = static_cast<const Assignment *>(s);
-            SharedConstExp asLeft = as->getLeft();
+            const std::shared_ptr<Assignment> as = s->as<Assignment>();
+            SharedConstExp asLeft                = as->getLeft();
 
             if (asLeft && (asLeft->getOper() == opGlobal)) {
                 // assignments to globals must always be kept
@@ -135,8 +136,8 @@ void UnusedStatementRemovalPass::remUnusedStmtEtc(UserProc *proc, RefCounter &re
                 continue;
             }
 
-            if ((refCounts.find(s) == refCounts.end()) ||
-                (refCounts[s] == 0)) { // Care not to insert unnecessarily
+            // Care not to insert unnecessarily
+            if ((refCounts.find(s) == refCounts.end()) || (refCounts[s] == 0)) {
                 // First adjust the counts, due to statements only referenced by statements that are
                 // themselves unused. Need to be careful not to count two refs to the same def as
                 // two; refCounts is a count of the number of statements that use a definition, not
@@ -152,7 +153,7 @@ void UnusedStatementRemovalPass::remUnusedStmtEtc(UserProc *proc, RefCounter &re
                     }
                 }
 
-                for (Statement *refd : stmtsRefdByUnused) {
+                for (SharedStmt refd : stmtsRefdByUnused) {
                     if (refd == nullptr) {
                         continue;
                     }
@@ -179,7 +180,7 @@ void UnusedStatementRemovalPass::remUnusedStmtEtc(UserProc *proc, RefCounter &re
         }
     } while (change);
 
-    // Recalulate at least the livenesses. Example: first call to printf in test/pentium/fromssa2,
+    // Recalulate at least the livenesses. Example: first call to printf in test/x86/fromssa2,
     // eax used only in a removed statement, so liveness in the call needs to be removed
     PassManager::get()->executePass(PassID::CallLivenessRemoval, proc);
     PassManager::get()->executePass(PassID::BlockVarRename, proc);
@@ -196,7 +197,7 @@ bool UnusedStatementRemovalPass::removeNullStatements(UserProc *proc)
     proc->getStatements(stmts);
 
     // remove null code
-    for (Statement *s : stmts) {
+    for (SharedStmt s : stmts) {
         if (s->isNullStatement()) {
             // A statement of the form x := x
             LOG_VERBOSE("Removing null statement: %1 %2", s->getNumber(), s);

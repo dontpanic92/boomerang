@@ -24,6 +24,7 @@ endif ()
 # Force C++17
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Hide all symbols unless explicitly exported
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
@@ -70,6 +71,8 @@ else () # GCC / Clang
     BOOMERANG_ADD_COMPILE_FLAGS(-Walloc-zero -Walloca)
     BOOMERANG_ADD_COMPILE_FLAGS(-Wsuggest-override)
     BOOMERANG_ADD_COMPILE_FLAGS(-Wundef)
+    BOOMERANG_ADD_COMPILE_FLAGS(-Wcast-qual -Wfloat-conversion -Wdouble-promotion)
+    BOOMERANG_ADD_COMPILE_FLAGS(-Wmissing-variable-declarations)
     BOOMERANG_ADD_COMPILE_FLAGS(-Wno-unknown-pragmas) # pragma region is not supported by GCC
     BOOMERANG_ADD_COMPILE_FLAGS(-fno-strict-aliasing) # Will break *reinterpret_cast<float*>(&int) otherwise
     BOOMERANG_ADD_COMPILE_FLAGS(-Wno-gnu-zero-variadic-macro-arguments) # Will break QSKIP() macro on clang otherwise
@@ -120,3 +123,11 @@ if (NOT MSVC)
         set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fprofile-arcs")
     endif (BOOMERANG_ENABLE_COVERAGE)
 endif (NOT MSVC)
+
+if (CMAKE_C_COMPILER MATCHES "[Cc]lang")
+    option(BOOMERANG_USE_ASAN "Use Clang address sanitizer (-fsanitize=address)" OFF)
+    if (BOOMERANG_USE_ASAN)
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=address")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address")
+    endif ()
+endif ()

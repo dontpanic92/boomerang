@@ -34,7 +34,7 @@
 class BOOMERANG_API PhiAssign : public Assignment
 {
 public:
-    typedef std::map<BasicBlock *, RefExp, BasicBlock::BBComparator> PhiDefs;
+    typedef std::map<IRFragment *, std::shared_ptr<RefExp>, Util::ptrCompare<IRFragment>> PhiDefs;
     typedef MapValueIterator<PhiDefs> iterator;
     typedef MapValueConstIterator<PhiDefs> const_iterator;
     typedef MapValueReverseIterator<PhiDefs> reverse_iterator;
@@ -42,26 +42,24 @@ public:
 
 public:
     PhiAssign(SharedExp _lhs)
-        : Assignment(_lhs)
+        : Assignment(StmtType::PhiAssign, _lhs)
         , m_defs()
     {
-        m_kind = StmtType::PhiAssign;
     }
 
     PhiAssign(SharedType ty, SharedExp _lhs)
-        : Assignment(ty, _lhs)
+        : Assignment(StmtType::PhiAssign, ty, _lhs)
         , m_defs()
     {
-        m_kind = StmtType::PhiAssign;
     }
 
-    PhiAssign(const PhiAssign &other) = default;
-    PhiAssign(PhiAssign &&other)      = default;
+    PhiAssign(const PhiAssign &other) = delete;
+    PhiAssign(PhiAssign &&other)      = delete;
 
-    virtual ~PhiAssign() override { m_defs.~PhiDefs(); }
+    ~PhiAssign() override { }
 
-    PhiAssign &operator=(const PhiAssign &other) = default;
-    PhiAssign &operator=(PhiAssign &&other) = default;
+    PhiAssign &operator=(const PhiAssign &other) = delete;
+    PhiAssign &operator=(PhiAssign &&other) = delete;
 
 public:
     iterator begin() { return m_defs.begin(); }
@@ -76,48 +74,48 @@ public:
 
 public:
     /// \copydoc Statement::clone
-    virtual Statement *clone() const override;
+    SharedStmt clone() const override;
 
     /// \copydoc Statement::getRight
-    virtual SharedExp getRight() const override { return nullptr; }
+    SharedExp getRight() const override { return nullptr; }
 
     /// \copydoc Statement::accept
-    virtual bool accept(StmtVisitor *visitor) const override;
+    bool accept(StmtVisitor *visitor) const override;
 
     /// \copydoc Statement::accept
-    virtual bool accept(StmtExpVisitor *visitor) override;
+    bool accept(StmtExpVisitor *visitor) override;
 
     /// \copydoc Statement::accept
-    virtual bool accept(StmtModifier *modifier) override;
+    bool accept(StmtModifier *modifier) override;
 
     /// \copydoc Statement::accept
-    virtual bool accept(StmtPartModifier *modifier) override;
+    bool accept(StmtPartModifier *modifier) override;
 
     /// \copydoc Assignment::printCompact
-    virtual void printCompact(OStream &os) const override;
+    void printCompact(OStream &os) const override;
 
     /// \copydoc Statement::search
-    virtual bool search(const Exp &search, SharedExp &result) const override;
+    bool search(const Exp &search, SharedExp &result) const override;
 
     /// \copydoc Statement::searchAll
-    virtual bool searchAll(const Exp &search, std::list<SharedExp> &result) const override;
+    bool searchAll(const Exp &search, std::list<SharedExp> &result) const override;
 
     /// \copydoc Statement::searchAndReplace
-    virtual bool searchAndReplace(const Exp &search, SharedExp replace, bool cc = false) override;
+    bool searchAndReplace(const Exp &search, SharedExp replace, bool cc = false) override;
 
     /// \copydoc Statement::simplify
-    virtual void simplify() override;
+    void simplify() override;
 
     //
     //    Phi specific functions
     //
 
     /// Get statement at index \p idx
-    Statement *getStmtAt(BasicBlock *bb);
-    const Statement *getStmtAt(BasicBlock *bb) const;
+    SharedStmt getStmtAt(IRFragment *frag);
+    SharedConstStmt getStmtAt(IRFragment *frag) const;
 
     /// Update the statement at index \p idx
-    void putAt(BasicBlock *idx, Statement *d, SharedExp e);
+    void putAt(IRFragment *idx, const SharedStmt &def, SharedExp usedExp);
 
     size_t getNumDefs() const { return m_defs.size(); }
     PhiDefs &getDefs() { return m_defs; }
@@ -125,22 +123,6 @@ public:
 
     void removeAllReferences(const std::shared_ptr<RefExp> &ref);
 
-    /// Convert this PhiAssignment to an ordinary Assignment.
-    /// Hopefully, this is the only place that Statements change from
-    /// one class to another.  All throughout the code, we assume that the addresses of Statement
-    /// objects do not change, so we need this slight hack to overwrite one object with another
-    void convertToAssign(SharedExp rhs);
-
-    // Generate a list of references for the parameters
-    void enumerateParams(std::list<SharedExp> &le);
-
 private:
-    union
-    {
-        PhiDefs m_defs; ///< A vector of information about definitions
-        Byte m_padding[sizeof(Assign) - sizeof(Assignment)];
-    };
+    PhiDefs m_defs; ///< A vector of information about definitions
 };
-
-static_assert(sizeof(PhiAssign) >= sizeof(Assign),
-              "Size of phi must not be smaller than size of Assign");

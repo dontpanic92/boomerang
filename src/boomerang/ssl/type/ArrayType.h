@@ -17,47 +17,47 @@
  * computing aliases.. as such, we give them a very large bound
  * and hope that no-one tries to alias beyond them
  */
-#define ARRAY_UNBOUNDED 9999999
+#define ARRAY_UNBOUNDED ((uint64)9999999)
 
 
 class BOOMERANG_API ArrayType : public Type
 {
 public:
     /// Create a new array type of fixed length
-    explicit ArrayType(SharedType baseType, size_t length = ARRAY_UNBOUNDED);
+    explicit ArrayType(SharedType baseType, uint64 length = ARRAY_UNBOUNDED);
 
     ArrayType(const ArrayType &other) = default;
     ArrayType(ArrayType &&other)      = default;
 
-    virtual ~ArrayType() override = default;
+    ~ArrayType() override = default;
 
     ArrayType &operator=(const ArrayType &other) = default;
     ArrayType &operator=(ArrayType &&other) = default;
 
 public:
-    static std::shared_ptr<ArrayType> get(SharedType p, size_t length = ARRAY_UNBOUNDED);
+    static std::shared_ptr<ArrayType> get(SharedType p, uint64 length = ARRAY_UNBOUNDED);
 
 public:
     /// \copydoc Type::operator==
-    virtual bool operator==(const Type &other) const override;
+    bool operator==(const Type &other) const override;
 
     /// \copydoc Type::operator<
-    virtual bool operator<(const Type &other) const override;
+    bool operator<(const Type &other) const override;
 
     /// \copydoc Type::clone
-    virtual SharedType clone() const override;
+    SharedType clone() const override;
 
     /// \copydoc Type::getSize
-    virtual Size getSize() const override;
+    Size getSize() const override;
 
     /// \copydoc Type::getCtype
-    virtual QString getCtype(bool final = false) const override;
+    QString getCtype(bool final = false) const override;
 
     /// \copydoc Type::isCompatibleWith
-    virtual bool isCompatibleWith(const Type &other, bool all = false) const override;
+    bool isCompatibleWith(const Type &other, bool all = false) const override;
 
     /// \copydoc Type::meetWith
-    virtual SharedType meetWith(SharedType other, bool &changed, bool useHighestPtr) const override;
+    SharedType meetWith(SharedType other, bool &changed, bool useHighestPtr) const override;
 
 public:
     /// \returns the type of elements of this array
@@ -68,7 +68,7 @@ public:
     void setBaseType(SharedType b);
 
     /// \returns the number of elements in this array.
-    size_t getLength() const { return m_length; }
+    uint64 getLength() const { return m_length; }
     void setLength(unsigned n) { m_length = n; }
 
     /// \returns true iff we do not know the length of the array (yet)
@@ -76,14 +76,14 @@ public:
 
 protected:
     /// \copydoc Type::isCompatible
-    virtual bool isCompatible(const Type &other, bool all) const override;
+    bool isCompatible(const Type &other, bool all) const override;
 
 private:
     /// \returns the new number of elements that fit in this array when converting
     /// the base type to \p newBaseType
-    size_t convertLength(SharedType newBaseType) const;
+    uint64 convertLength(SharedType newBaseType) const;
 
 private:
     SharedType m_baseType;
-    size_t m_length = 0; ///< number of elements in this array
+    uint64 m_length = 0; ///< number of elements in this array
 };

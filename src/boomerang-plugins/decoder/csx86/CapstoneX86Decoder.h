@@ -10,7 +10,7 @@
 #pragma once
 
 
-#include "CapstoneDecoder.h"
+#include "../CapstoneDecoder.h"
 
 #include "boomerang/core/BoomerangAPI.h"
 #include "boomerang/ssl/exp/Operator.h"
@@ -28,16 +28,16 @@ public:
 
 public:
     /// \copydoc IDecoder::decodeInstruction
-    virtual bool decodeInstruction(Address pc, ptrdiff_t delta, DecodeResult &result) override;
+    bool disassembleInstruction(Address pc, ptrdiff_t delta, MachineInstruction &result) override;
+
+    /// \copydoc IDecoder::liftInstruction
+    bool liftInstruction(const MachineInstruction &insn, LiftedInstruction &lifted) override;
 
     /// \copydoc IDecoder::getRegNameByNum
-    virtual QString getRegNameByNum(RegNum regNum) const override;
-
-    /// \copydoc IDecoder::getRegNumByName
-    virtual RegNum getRegNumByName(const QString &name) const override;
+    QString getRegNameByNum(RegNum regNum) const override;
 
     /// \copydoc IDecoder::getRegSize
-    virtual int getRegSizeByNum(RegNum regNum) const override;
+    int getRegSizeByNum(RegNum regNum) const override;
 
 private:
     bool initialize(Project *project) override;
@@ -51,7 +51,7 @@ private:
      * hard-coded adjustments are performed due to SSL limitations. See the function definition
      * for details.
      */
-    std::unique_ptr<RTL> createRTLForInstruction(Address pc, const cs::cs_insn *instruction);
+    std::unique_ptr<RTL> createRTLForInstruction(const MachineInstruction &insn);
 
     /**
      * Instantiates an RTL for a single instruction, replacing formal parameters with actual
@@ -62,8 +62,7 @@ private:
      * \param numOperands number of instruction operands (e.g. 2 for MOV.reg32.reg32)
      * \param operands Array containing actual arguments containing \p numOperands elements.
      */
-    std::unique_ptr<RTL> instantiateRTL(Address pc, const char *instructionID, int numOperands,
-                                        const cs::cs_x86_op *operands);
+    std::unique_ptr<RTL> instantiateRTL(const MachineInstruction &insn);
 
     /**
      * Generate statements for the BSF and BSR instructions (Bit Scan Forward/Reverse)
@@ -72,9 +71,11 @@ private:
      * instrucion to generate the correct semantics.
      * \param pc start of the instruction
      */
-    bool genBSFR(Address pc, const cs::cs_insn *instruction, DecodeResult &result);
+    bool genBSFR(const MachineInstruction &insn, LiftedInstruction &result);
+
+    /// \returns the name of the SSL template for \p instruction
+    QString getTemplateName(const cs::cs_insn *instruction) const;
 
 private:
-    int m_bsfrState = 0; ///< State for state machine used in genBSFR()
     cs::cs_insn *m_insn; ///< decoded instruction;
 };

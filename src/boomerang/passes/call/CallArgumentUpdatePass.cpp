@@ -27,20 +27,17 @@ CallArgumentUpdatePass::CallArgumentUpdatePass()
 bool CallArgumentUpdatePass::execute(UserProc *proc)
 {
     proc->getProg()->getProject()->alertDecompiling(proc);
-    const bool experimental = proc->getProg()->getProject()->getSettings()->experimental;
 
-    for (BasicBlock *bb : *proc->getCFG()) {
-        BasicBlock::RTLRIterator rrit;
-        StatementList::reverse_iterator srit;
-        CallStatement *c = dynamic_cast<CallStatement *>(bb->getLastStmt(rrit, srit));
+    for (IRFragment *frag : *proc->getCFG()) {
+        SharedStmt s = frag->getLastStmt();
 
         // Note: we may have removed some statements, so there may no longer be a last statement!
-        if (c == nullptr) {
+        if (!s || !s->isCall()) {
             continue;
         }
 
-        c->updateArguments(experimental);
-        LOG_VERBOSE2("Updated call statement to %1", c);
+        s->as<CallStatement>()->updateArguments();
+        LOG_VERBOSE2("Updated call statement to %1", s->as<CallStatement>());
     }
 
     return true;

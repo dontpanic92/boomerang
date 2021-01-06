@@ -26,12 +26,19 @@ enum class SwitchType : char
     F       = 'F', // Fortran style
 };
 
-/**
- * CaseStatement is derived from GotoStatement. In addition to the destination
- * of the jump, it has a switch variable Exp.
- */
+
 struct SwitchInfo
 {
+public:
+    ~SwitchInfo()
+    {
+        if (switchType == SwitchType::F) {
+            int *arr = reinterpret_cast<int *>(tableAddr.value());
+            delete[] arr;
+        }
+    }
+
+public:
     SharedExp switchExp;   ///< Expression to switch on, e.g. v[7]
     SwitchType switchType; ///< Switch type: 'A', 'O', 'R', 'H', or 'F' etc
     int lowerBound;        ///< Lower bound of the switch variable
@@ -42,52 +49,56 @@ struct SwitchInfo
 };
 
 
+/**
+ * CaseStatement is derived from GotoStatement. In addition to the destination
+ * of the jump, it has a switch variable Exp.
+ */
 class BOOMERANG_API CaseStatement : public GotoStatement
 {
 public:
-    CaseStatement();
-    CaseStatement(const CaseStatement &other) = default;
-    CaseStatement(CaseStatement &&other)      = default;
+    CaseStatement(SharedExp dest);
+    CaseStatement(const CaseStatement &other);
+    CaseStatement(CaseStatement &&other) = default;
 
-    virtual ~CaseStatement() override;
+    ~CaseStatement() override;
 
-    CaseStatement &operator=(const CaseStatement &other) = default;
+    CaseStatement &operator=(const CaseStatement &other);
     CaseStatement &operator=(CaseStatement &&other) = default;
 
 public:
     /// \copydoc GotoStatement::clone
-    virtual Statement *clone() const override;
+    SharedStmt clone() const override;
 
     /// \copydoc GotoStatement::accept
-    virtual bool accept(StmtVisitor *visitor) const override;
+    bool accept(StmtVisitor *visitor) const override;
 
     /// \copydoc GotoStatement::accept
-    virtual bool accept(StmtExpVisitor *visitor) override;
+    bool accept(StmtExpVisitor *visitor) override;
 
     /// \copydoc GotoStatement::accept
-    virtual bool accept(StmtModifier *modifier) override;
+    bool accept(StmtModifier *modifier) override;
 
     /// \copydoc GotoStatement::accept
-    virtual bool accept(StmtPartModifier *modifier) override;
+    bool accept(StmtPartModifier *modifier) override;
 
     /// \copydoc GotoStatement::print
-    virtual void print(OStream &os) const override;
+    void print(OStream &os) const override;
 
     /// \copydoc GotoStatement::searchAndReplace
-    virtual bool searchAndReplace(const Exp &search, SharedExp replace, bool cc = false) override;
+    bool searchAndReplace(const Exp &search, SharedExp replace, bool cc = false) override;
 
     /// \copydoc GotoStatement::searchAll
-    virtual bool searchAll(const Exp &search, std::list<SharedExp> &result) const override;
+    bool searchAll(const Exp &search, std::list<SharedExp> &result) const override;
 
     /// \copydoc GotoStatement::simplify
-    virtual void simplify() override;
+    void simplify() override;
 
     /// Get information about this switch statement
     SwitchInfo *getSwitchInfo();
     const SwitchInfo *getSwitchInfo() const;
 
-    void setSwitchInfo(SwitchInfo *psi);
+    void setSwitchInfo(std::unique_ptr<SwitchInfo> psi);
 
 private:
-    SwitchInfo *m_switchInfo; ///< Ptr to struct with information about the switch
+    std::unique_ptr<SwitchInfo> m_switchInfo; ///< Ptr to struct with information about the switch
 };

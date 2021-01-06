@@ -10,6 +10,8 @@
 #pragma once
 
 
+#include "boomerang/core/BoomerangAPI.h"
+
 #include <memory>
 
 
@@ -22,10 +24,10 @@ class Project;
 /**
  * Provides declarations for symbols and library function signatures.
  */
-class ISymbolProvider
+class BOOMERANG_API ISymbolProvider
 {
 public:
-    ISymbolProvider(Project *) {}
+    ISymbolProvider(Project *) { }
     virtual ~ISymbolProvider() = default;
 
 public:

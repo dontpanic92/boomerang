@@ -25,38 +25,74 @@ class Prog;
 
 /**
  * Represents a high level call.
- * Information about parameters and the like are stored here.
+ * Information about parameters and the like is stored here.
  */
 class BOOMERANG_API CallStatement : public GotoStatement
 {
 public:
-    CallStatement();
-    CallStatement(const CallStatement &other) = default;
-    CallStatement(CallStatement &&other)      = default;
+    CallStatement(Address dest);
+    CallStatement(SharedExp dest);
+    CallStatement(const CallStatement &other);
+    CallStatement(CallStatement &&other) = default;
 
-    virtual ~CallStatement() override;
+    ~CallStatement() override;
 
-    CallStatement &operator=(const CallStatement &other) = default;
+    CallStatement &operator=(const CallStatement &other);
     CallStatement &operator=(CallStatement &&other) = default;
 
 public:
     /// \copydoc GotoStatement::clone
-    virtual Statement *clone() const override;
+    SharedStmt clone() const override;
 
     /// \copydoc GotoStatement::accept
-    virtual bool accept(StmtVisitor *visitor) const override;
+    bool accept(StmtVisitor *visitor) const override;
 
     /// \copydoc GotoStatement::accept
-    virtual bool accept(StmtExpVisitor *visitor) override;
+    bool accept(StmtExpVisitor *visitor) override;
 
     /// \copydoc GotoStatement::accept
-    virtual bool accept(StmtModifier *modifier) override;
+    bool accept(StmtModifier *modifier) override;
 
     /// \copydoc GotoStatement::accept
-    virtual bool accept(StmtPartModifier *modifier) override;
+    bool accept(StmtPartModifier *modifier) override;
 
     /// \copydoc Statement::setNumber
-    virtual void setNumber(int num) override;
+    void setNumber(int num) override;
+
+    /// \copydoc Statement::getDefinitions
+    void getDefinitions(LocationSet &defs, bool assumeABICompliance) const override;
+
+    /// \copydoc Statement::definesLoc
+    bool definesLoc(SharedExp loc) const override; // True if this Statement defines loc
+
+    /// \copydoc GotoStatement::search
+    bool search(const Exp &search, SharedExp &result) const override;
+
+    /// \copydoc GotoStatement::searchAll
+    bool searchAll(const Exp &search, std::list<SharedExp> &result) const override;
+
+    /// \copydoc GotoStatement::searchAndReplace
+    bool searchAndReplace(const Exp &search, SharedExp replace, bool cc = false) override;
+
+    /// \copydoc GotoStatement::simplify
+    void simplify() override;
+
+    /// \copydoc Statement::getTypeForExp
+    SharedConstType getTypeForExp(SharedConstExp exp) const override;
+
+    /// \copydoc Statement::getTypeForExp
+    SharedType getTypeForExp(SharedExp exp) override;
+
+    /// \copydoc Statement::setTypeForExp
+    void setTypeForExp(SharedExp exp, SharedType ty) override;
+
+    /// \copydoc GotoStatement::print
+    void print(OStream &os) const override;
+
+public:
+    /// Return call's arguments
+    StatementList &getArguments() { return m_arguments; }
+    const StatementList &getArguments() const { return m_arguments; }
 
     /// Set the arguments of this call. Takes ownership of the statements
     /// in \p args.
@@ -67,34 +103,102 @@ public:
     /// \note Should only be called for calls to library functions
     void setSigArguments();
 
-    /// Return call's arguments
-    StatementList &getArguments() { return m_arguments; }
-    const StatementList &getArguments() const { return m_arguments; }
-
     /// Update the arguments based on a callee change
-    void updateArguments(bool experimental);
+    void updateArguments();
 
-    /// Temporarily needed for ad-hoc type analysis
-    void removeDefine(SharedExp e);
+    SharedExp getArgumentExp(int i) const;
 
-    /// For testing. Takes ownership of the pointer.
-    void addDefine(ImplicitAssign *as);
+    void setArgumentExp(int i, SharedExp e);
 
-    // Calculate results(this) = defines(this) intersect live(this)
-    // Note: could use a LocationList for this, but then there is nowhere to store the types (for
-    // DFA based TA) So the RHS is just ignored
-    std::unique_ptr<StatementList> calcResults() const; // Calculate defines(this) isect live(this)
+    int getNumArguments() const;
 
-    ReturnStatement *getCalleeReturn() { return m_calleeReturn; }
-    void setCalleeReturn(ReturnStatement *ret) { m_calleeReturn = ret; }
+    void setNumArguments(int i);
+
+    void removeArgument(int i);
+
+    SharedType getArgumentType(int i) const;
+
+    void setArgumentType(int i, SharedType ty);
+
+    void eliminateDuplicateArgs();
+
+public:
+    /// Set the function that is called by this call statement.
+    void setDestProc(Function *dest);
+
+    /// \returns the function that is called by this call statement.
+    Function *getDestProc();
+    const Function *getDestProc() const;
+
+    /**
+     * Sets a bit that says that this call is effectively followed by a return.
+     * This happens e.g. on x86 for tail call jumps (i.e jmp instead of call/ret)
+     * \param b true if this is to be set; false to clear the bit
+     */
+    void setReturnAfterCall(bool b);
+
+    /// \returns True if this call is effectively followed by a return
+    bool isReturnAfterCall() const;
+
     bool isChildless() const;
-    SharedExp getProven(SharedExp e);
+
+    bool isCallToMemOffset() const;
 
     std::shared_ptr<Signature> getSignature() { return m_signature; }
-    void setSignature(std::shared_ptr<Signature> sig)
-    {
-        m_signature = sig;
-    } ///< Only used by range analysis
+    void setSignature(const std::shared_ptr<Signature> &sig) { m_signature = sig; }
+
+public:
+    /// \returns pointer to the def collector object
+    const DefCollector *getDefCollector() const { return &m_defCol; }
+    DefCollector *getDefCollector() { return &m_defCol; }
+
+    /// \returns pointer to the use collector object
+    const UseCollector *getUseCollector() const { return &m_useCol; }
+    UseCollector *getUseCollector() { return &m_useCol; }
+
+    /// Add x to the UseCollector for this call
+    void useBeforeDefine(SharedExp x) { m_useCol.collectUse(x); }
+
+    /// Remove e from the UseCollector
+    void removeLiveness(SharedExp e) { m_useCol.removeUse(e); }
+
+    /// Remove all livenesses
+    void removeAllLive() { m_useCol.clear(); }
+
+    /// direct call
+    void useColfromSSAForm(const SharedStmt &s) { m_useCol.fromSSAForm(m_proc, s); }
+
+public:
+    /// For testing.
+    void addDefine(const std::shared_ptr<ImplicitAssign> &as);
+
+    /// Temporarily needed for ad-hoc type analysis
+    /// \returns true if removed successfully
+    bool removeDefine(SharedExp e);
+
+    /// Get list of locations defined by this call
+    const StatementList &getDefines() const { return m_defines; }
+    StatementList &getDefines() { return m_defines; }
+
+    void setDefines(const StatementList &defines);
+
+    /// Find the reaching definition for expression e.
+    /// Find the definition for the given expression, using the embedded Collector object
+    /// Was called findArgument(), and used implicit arguments and signature parameters
+    /// \note must only operator on unsubscripted locations, otherwise it is invalid
+    SharedExp findDefFor(SharedExp e) const;
+
+public:
+    /// Calculate results(this) = defines(this) intersect live(this)
+    /// \note could use a LocationList for this, but then there is nowhere to store the types
+    /// (for DFA based TA). So the RHS is just ignored
+    std::unique_ptr<StatementList> calcResults() const;
+
+    /// \returns the one and only return statement of the called proc
+    const std::shared_ptr<ReturnStatement> &getCalleeReturn() { return m_calleeReturn; }
+    void setCalleeReturn(const std::shared_ptr<ReturnStatement> &ret) { m_calleeReturn = ret; }
+
+    SharedExp getProven(SharedExp e);
 
     /// Localise the various components of expression e with reaching definitions to this call
     /// Note: can change e so usually need to clone the argument
@@ -107,109 +211,18 @@ public:
     SharedExp localiseExp(SharedExp e);
 
     /// Localise only components of e, i.e. xxx if e is m[xxx]
-    void localiseComp(SharedExp e); // Localise only xxx of m[xxx]
+    void localiseComp(SharedExp e);
 
     // Do the call bypass logic e.g. r28{20} -> r28{17} + 4 (where 20 is this CallStatement)
     // Set ch if changed (bypassed)
     SharedExp bypassRef(const std::shared_ptr<RefExp> &r, bool &changed);
 
-    void clearUseCollector() { m_useCol.clear(); }
-
-    /// Find the reaching definition for expression e.
-    /// Find the definition for the given expression, using the embedded Collector object
-    /// Was called findArgument(), and used implicit arguments and signature parameters
-    /// \note must only operator on unsubscripted locations, otherwise it is invalid
-    SharedExp findDefFor(SharedExp e) const;
-    SharedExp getArgumentExp(int i) const;
-    void setArgumentExp(int i, SharedExp e);
-    void setNumArguments(int i);
-    int getNumArguments() const;
-    void removeArgument(int i);
-    SharedType getArgumentType(int i) const;
-    void setArgumentType(int i, SharedType ty);
-    void eliminateDuplicateArgs();
-
-    /// \copydoc GotoStatement::print
-    virtual void print(OStream &os) const override;
-
-    /// \copydoc GotoStatement::search
-    virtual bool search(const Exp &search, SharedExp &result) const override;
-
-    /// \copydoc GotoStatement::searchAndReplace
-    virtual bool searchAndReplace(const Exp &search, SharedExp replace, bool cc = false) override;
-
-    /// \copydoc GotoStatement::search
-    virtual bool searchAll(const Exp &search, std::list<SharedExp> &result) const override;
-
-    /**
-     * Sets a bit that says that this call is effectively followed by a return.
-     * This happens e.g. on SPARC when there is a restore in the delay slot of the call
-     * \param b true if this is to be set; false to clear the bit
-     */
-    void setReturnAfterCall(bool b);
-
-    /**
-     * Tests a bit that says that this call is effectively followed by a return.
-     * This happens e.g. on SPARC when there is a restore in the delay slot of the call
-     * \returns True if this call is effectively followed by a return
-     */
-    bool isReturnAfterCall() const;
-
-    /// Set the function that is called by this call statement.
-    void setDestProc(Function *dest);
-
-    /// \returns the function that is called by this call statement.
-    Function *getDestProc();
-    const Function *getDestProc() const;
-
-    /// \copydoc Statement::getDefinitions
-    virtual void getDefinitions(LocationSet &defs, bool assumeABICompliance) const override;
-
-    /// \copydoc Statement::definesLoc
-    virtual bool definesLoc(SharedExp loc) const override; // True if this Statement defines loc
-
-    /// \copydoc GotoStatement::simplify
-    virtual void simplify() override;
-
-    /// \copydoc Statement::getTypeForExp
-    virtual SharedConstType getTypeForExp(SharedConstExp exp) const override;
-
-    /// \copydoc Statement::getTypeForExp
-    virtual SharedType getTypeForExp(SharedExp exp) override;
-
-    /// \copydoc Statement::setTypeForExp
-    virtual void setTypeForExp(SharedExp exp, SharedType ty) override;
-
-    /// \returns pointer to the def collector object
-    const DefCollector *getDefCollector() const { return &m_defCol; }
-    DefCollector *getDefCollector() { return &m_defCol; }
-
-
-    /// \returns pointer to the use collector object
-    const UseCollector *getUseCollector() const { return &m_useCol; }
-    UseCollector *getUseCollector() { return &m_useCol; }
-
-    /// Add x to the UseCollector for this call
-    void useBeforeDefine(SharedExp x) { m_useCol.insert(x); }
-
-    /// Remove e from the UseCollector
-    void removeLiveness(SharedExp e) { m_useCol.remove(e); }
-
-    /// Remove all livenesses
-    void removeAllLive() { m_useCol.clear(); }
-
-    /// Get list of locations defined by this call
-    const StatementList &getDefines() const { return m_defines; }
-    StatementList &getDefines() { return m_defines; }
-
-    void setDefines(const StatementList &defines);
-
     /// Process this call for ellipsis parameters. If found, in a printf/scanf call, truncate the
-    /// number of parameters if needed, and return true if any signature parameters added This
+    /// number of parameters if needed, and return true if any signature parameters added. This
     /// function has two jobs. One is to truncate the list of arguments based on the format string.
     /// The second is to add parameter types to the signature.
     /// If -Td is used, type analysis will be rerun with these changes.
-    bool ellipsisProcessing(Prog *prog);
+    bool doEllipsisProcessing();
 
     /// Attempt to convert this call, if indirect, to a direct call.
     /// NOTE: at present, we igore the possibility that some other statement
@@ -217,20 +230,19 @@ public:
     /// \returns true if converted
     bool tryConvertToDirect();
 
-    /// direct call
-    void useColfromSSAForm(Statement *s) { m_useCol.fromSSAForm(m_proc, s); }
-
-    bool isCallToMemOffset() const;
-
 private:
+    bool doObjCEllipsisProcessing(const QString &formatStr);
+
+    /// Parses the format string and extracts all signature types.
+    /// \returns the number of new types added, or -1 on failure.
+    int parseFmtStr(const QString &fmtStr, bool isScanf);
+
     /// Private helper functions for the above
-    /// Helper function for makeArgAssign(?)
-    void addSigParam(SharedType ty, bool isScanf);
+    /// If addPointer is true, add type 'ty *' to the signature instead of type 'ty'
+    void addSigParam(SharedType ty, bool addPointer);
 
     /// Make an assign suitable for use as an argument from a callee context expression
-    Assign *makeArgAssign(SharedType ty, SharedExp e);
-
-    bool objcSpecificProcessing(const QString &formatStr);
+    std::shared_ptr<Assign> makeArgAssign(SharedType ty, SharedExp e);
 
 private:
     bool m_returnAfterCall = false; // True if call is effectively followed by a return.
@@ -269,5 +281,5 @@ private:
     /// this will be a special ReturnStatement with ImplicitAssigns.
     /// Callee could be unanalysed because of an unanalysed indirect call,
     /// or a "recursion break".
-    ReturnStatement *m_calleeReturn = nullptr;
+    std::shared_ptr<ReturnStatement> m_calleeReturn = nullptr;
 };

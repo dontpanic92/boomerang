@@ -20,6 +20,8 @@
 #include <QBuffer>
 #include <QFile>
 
+#include <stdexcept>
+
 
 namespace
 {
@@ -198,7 +200,7 @@ bool DOS4GWBinaryLoader::loadFromMemory(QByteArray &data)
         return false;
     }
 
-    if (!Util::testMagic(&m_LXHeader.sigLo, { 'L', 'X' }) ||
+    if (!Util::testMagic(&m_LXHeader.sigLo, { 'L', 'X' }) &&
         !Util::testMagic(&m_LXHeader.sigLo, { 'L', 'E' })) {
         LOG_ERROR("Error loading file: bad LE/LX magic");
         return false;
@@ -416,7 +418,7 @@ LoadFmt DOS4GWBinaryLoader::getFormat() const
 
 Machine DOS4GWBinaryLoader::getMachine() const
 {
-    return Machine::PENTIUM;
+    return Machine::X86;
 }
 
 

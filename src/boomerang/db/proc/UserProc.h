@@ -36,7 +36,14 @@ enum class ProcStatus : uint8_t
 };
 
 
-typedef std::set<UserProc *> ProcSet;
+class BOOMERANG_API lessUserProc
+{
+public:
+    bool operator()(const UserProc *lhs, const UserProc *rhs) const;
+};
+
+
+typedef std::set<UserProc *, lessUserProc> ProcSet;
 typedef std::list<UserProc *> ProcList;
 
 
@@ -71,7 +78,7 @@ public:
     UserProc(const UserProc &) = delete;
     UserProc(UserProc &&)      = default;
 
-    virtual ~UserProc() override;
+    ~UserProc() override;
 
     UserProc &operator=(const UserProc &) = delete;
     UserProc &operator=(UserProc &&) = default;
@@ -124,15 +131,13 @@ public:
         return m_recursionGroup && m_recursionGroup->find(proc) != m_recursionGroup->end();
     }
 
-    /**
-     * Get the BB with the entry point address for this procedure.
-     * \note (not always the first BB)
-     * \returns   Pointer to the entry point BB, or nullptr if not found
-     */
-    BasicBlock *getEntryBB();
+    /// Get the fragment with the entry point address for this procedure.
+    /// \note (not always the first fragment)
+    /// \returns   Pointer to the entry point fragment, or nullptr if not found
+    IRFragment *getEntryFragment() const;
 
-    /// Set the entry BB for this procedure (constructor has the entry address)
-    void setEntryBB();
+    /// Set the entry fragment for this procedure (constructor has the entry address)
+    void setEntryFragment();
 
     /// Decompile this procedure, and all callees.
     void decompileRecursive();
@@ -148,14 +153,22 @@ public:
 
     /// Remove (but not delete) \p stmt from this UserProc
     /// \returns true iff successfully removed
-    bool removeStatement(Statement *stmt);
+    bool removeStatement(const SharedStmt &stmt);
 
-    Assign *insertAssignAfter(Statement *s, SharedExp left, SharedExp right);
+    std::shared_ptr<Assign> insertAssignAfter(SharedStmt s, SharedExp left, SharedExp right);
 
     /// Insert statement \p stmt after statement \p afterThis.
-    /// \note this procedure is designed for the front end, where enclosing BBs are not set up yet.
-    /// So this is an inefficient linear search!
-    bool insertStatementAfter(Statement *afterThis, Statement *stmt);
+    /// \returns true if successfully inserted.
+    bool insertStatementAfter(const SharedStmt &afterThis, const SharedStmt &stmt);
+
+    /// Searches for the phi assignment \p orig and if found, replaces the RHS with \p newRhs
+    /// (converting it to an ordiary assign). If successful, the new Assign is returned,
+    /// otherwise nullptr.
+    ///
+    /// Example: (newRhs = r28{2})
+    ///  r24 := phi(r25{5}, r27{6})  -> r24 := r28{2}
+    std::shared_ptr<Assign> replacePhiByAssign(const std::shared_ptr<const PhiAssign> &orig,
+                                               const SharedExp &newRhs);
 
 public:
     // parameter related
@@ -183,12 +196,9 @@ public:
     /// Find the implicit definition for \a e and lookup a symbol
     QString lookupParam(SharedConstExp e) const;
 
-    /**
-     * Filter out locations not possible as parameters or arguments.
-     * \returns true if \p e should be filtered out (i.e. removed)
-     * \sa UserProc::filterReturns
-     */
-    bool filterParams(SharedExp e);
+    /// \returns true if \p e can be a parameter of a function.
+    /// \sa UserProc::filterReturns
+    bool canBeParam(const SharedExp &e);
 
 public:
     // return related
@@ -197,19 +207,15 @@ public:
     Address getRetAddr();
 
     /// \param rtlAddr the address of the RTL containing \p retStmt
-    void setRetStmt(ReturnStatement *retStmt, Address rtlAddr);
+    void setRetStmt(const std::shared_ptr<ReturnStatement> &retStmt, Address rtlAddr);
 
-    ReturnStatement *getRetStmt() { return m_retStatement; }
-    const ReturnStatement *getRetStmt() const { return m_retStatement; }
+    std::shared_ptr<ReturnStatement> getRetStmt() { return m_retStatement; }
+    std::shared_ptr<const ReturnStatement> getRetStmt() const { return m_retStatement; }
 
     void removeRetStmt() { m_retStatement = nullptr; }
 
-    /**
-     * Filter out locations not possible as return locations.
-     * \returns true if \p e  should be filtered out (i.e. removed)
-     * \sa UserProc::filterParams
-     */
-    bool filterReturns(SharedExp e);
+    /// \returns true if \p e can be a return of a function.
+    bool canBeReturn(const SharedExp &e);
 
 public:
     // local variable related
@@ -363,8 +369,9 @@ private:
     bool proveEqual(const SharedExp &lhs, const SharedExp &rhs, bool conditional = false);
 
     /// helper function for proveEqual()
-    bool prover(SharedExp query, std::set<PhiAssign *> &lastPhis,
-                std::map<PhiAssign *, SharedExp> &cache, PhiAssign *lastPhi = nullptr);
+    bool prover(SharedExp query, std::set<std::shared_ptr<PhiAssign>> &lastPhis,
+                std::map<std::shared_ptr<PhiAssign>, SharedExp> &cache,
+                std::shared_ptr<PhiAssign> lastPhi = nullptr);
 
     // FIXME: is this the same as lookupSym() now?
     /// Lookup the expression in the symbol map. Return nullptr or a C string with the symbol. Use
@@ -385,7 +392,7 @@ private:
     ProcStatus m_status = ProcStatus::Undecoded;
 
     /// Number of the next local. Can't use locals.size() because some get deleted
-    int m_nextLocal = 0;
+    uint32 m_nextLocal = 0;
 
     std::unique_ptr<ProcCFG> m_cfg; ///< The control flow graph.
 
@@ -453,5 +460,5 @@ private:
      * See code in frontend/frontend.cpp handling case StmtType::Ret.
      * If no return statement, this will be nullptr.
      */
-    ReturnStatement *m_retStatement = nullptr;
+    std::shared_ptr<ReturnStatement> m_retStatement = nullptr;
 };

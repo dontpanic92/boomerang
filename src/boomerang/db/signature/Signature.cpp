@@ -13,11 +13,10 @@
 #include "boomerang/db/proc/ProcCFG.h"
 #include "boomerang/db/proc/UserProc.h"
 #include "boomerang/db/signature/PPCSignature.h"
-#include "boomerang/db/signature/PentiumSignature.h"
-#include "boomerang/db/signature/SPARCSignature.h"
 #include "boomerang/db/signature/ST20Signature.h"
 #include "boomerang/db/signature/Signature.h"
 #include "boomerang/db/signature/Win32Signature.h"
+#include "boomerang/db/signature/X86Signature.h"
 #include "boomerang/ssl/exp/Location.h"
 #include "boomerang/ssl/exp/RefExp.h"
 #include "boomerang/ssl/exp/Terminal.h"
@@ -402,12 +401,8 @@ std::shared_ptr<Signature> Signature::promote(UserProc *p)
         return std::make_shared<CallingConvention::Win32Signature>(*this);
     }
 
-    if (CallingConvention::StdC::PentiumSignature::qualified(p, *this)) {
-        return std::make_shared<CallingConvention::StdC::PentiumSignature>(*this);
-    }
-
-    if (CallingConvention::StdC::SPARCSignature::qualified(p, *this)) {
-        return std::make_shared<CallingConvention::StdC::SPARCSignature>(*this);
+    if (CallingConvention::StdC::X86Signature::qualified(p, *this)) {
+        return std::make_shared<CallingConvention::StdC::X86Signature>(*this);
     }
 
     if (CallingConvention::StdC::PPCSignature::qualified(p, *this)) {
@@ -422,31 +417,29 @@ std::shared_ptr<Signature> Signature::promote(UserProc *p)
 }
 
 
-std::shared_ptr<Signature> Signature::instantiate(Machine machine, CallConv cc, const QString &name)
+std::unique_ptr<Signature> Signature::instantiate(Machine machine, CallConv cc, const QString &name)
 {
     switch (machine) {
-    case Machine::PENTIUM:
+    case Machine::X86:
         if (cc == CallConv::Pascal) {
-            // For now, assume the only pascal calling convention Pentium signatures will be Windows
-            return std::make_shared<CallingConvention::Win32Signature>(name);
+            // For now, assume the only pascal calling convention x86 signatures will be Windows
+            return std::make_unique<CallingConvention::Win32Signature>(name);
         }
         else if (cc == CallConv::ThisCall) {
-            return std::make_shared<CallingConvention::Win32TcSignature>(name);
+            return std::make_unique<CallingConvention::Win32TcSignature>(name);
         }
         else {
-            return std::make_shared<CallingConvention::StdC::PentiumSignature>(name);
+            return std::make_unique<CallingConvention::StdC::X86Signature>(name);
         }
 
-    case Machine::SPARC: return std::make_shared<CallingConvention::StdC::SPARCSignature>(name);
+    case Machine::PPC: return std::make_unique<CallingConvention::StdC::PPCSignature>(name);
 
-    case Machine::PPC: return std::make_shared<CallingConvention::StdC::PPCSignature>(name);
-
-    case Machine::ST20: return std::make_shared<CallingConvention::StdC::ST20Signature>(name);
+    case Machine::ST20: return std::make_unique<CallingConvention::StdC::ST20Signature>(name);
 
     // insert other conventions here
     default:
         LOG_WARN("Unknown signature: %1 (CallConv: %2)", name, Util::getCallConvName(cc));
-        return std::make_shared<Signature>(name);
+        return std::make_unique<Signature>(name);
     }
 }
 
@@ -500,34 +493,24 @@ bool Signature::getABIDefines(Machine machine, StatementList &defs)
     }
 
     switch (machine) {
-    case Machine::PENTIUM:
-        defs.append(new ImplicitAssign(Location::regOf(REG_PENT_EAX))); // eax
-        defs.append(new ImplicitAssign(Location::regOf(REG_PENT_ECX))); // ecx
-        defs.append(new ImplicitAssign(Location::regOf(REG_PENT_EDX))); // edx
-        return true;
-
-    case Machine::SPARC:
-        defs.append(new ImplicitAssign(Location::regOf(REG_SPARC_O0))); // %o0-o5
-        defs.append(new ImplicitAssign(Location::regOf(REG_SPARC_O1)));
-        defs.append(new ImplicitAssign(Location::regOf(REG_SPARC_O2)));
-        defs.append(new ImplicitAssign(Location::regOf(REG_SPARC_O3)));
-        defs.append(new ImplicitAssign(Location::regOf(REG_SPARC_O4)));
-        defs.append(new ImplicitAssign(Location::regOf(REG_SPARC_O5)));
-        defs.append(new ImplicitAssign(Location::regOf(REG_SPARC_G1))); // %g1
+    case Machine::X86:
+        defs.append(std::make_shared<ImplicitAssign>(Location::regOf(REG_X86_EAX))); // eax
+        defs.append(std::make_shared<ImplicitAssign>(Location::regOf(REG_X86_ECX))); // ecx
+        defs.append(std::make_shared<ImplicitAssign>(Location::regOf(REG_X86_EDX))); // edx
         return true;
 
     case Machine::PPC:
 
         for (int r = REG_PPC_G3; r <= REG_PPC_G12; ++r) {
-            defs.append(new ImplicitAssign(Location::regOf(r))); // r3-r12
+            defs.append(std::make_shared<ImplicitAssign>(Location::regOf(r))); // r3-r12
         }
 
         break;
 
     case Machine::ST20:
-        defs.append(new ImplicitAssign(Location::regOf(REG_ST20_A))); // A
-        defs.append(new ImplicitAssign(Location::regOf(REG_ST20_B))); // B
-        defs.append(new ImplicitAssign(Location::regOf(REG_ST20_C))); // C
+        defs.append(std::make_shared<ImplicitAssign>(Location::regOf(REG_ST20_A))); // A
+        defs.append(std::make_shared<ImplicitAssign>(Location::regOf(REG_ST20_B))); // B
+        defs.append(std::make_shared<ImplicitAssign>(Location::regOf(REG_ST20_C))); // C
         return true;
 
     default: break;

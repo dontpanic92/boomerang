@@ -6,4 +6,6 @@
 # WARRANTIES.
 #
 
+add_subdirectory(decoder)
 add_subdirectory(loader)
+add_subdirectory(frontend)

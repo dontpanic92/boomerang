@@ -10,6 +10,7 @@
 #include "PhiAssign.h"
 
 #include "boomerang/db/BasicBlock.h"
+#include "boomerang/db/proc/UserProc.h"
 #include "boomerang/ssl/exp/Binary.h"
 #include "boomerang/ssl/exp/RefExp.h"
 #include "boomerang/ssl/statements/Assign.h"
@@ -24,32 +25,15 @@
 #include "boomerang/visitor/stmtvisitor/StmtVisitor.h"
 
 
-bool BasicBlock::BBComparator::operator()(const BasicBlock *bb1, const BasicBlock *bb2) const
+SharedStmt PhiAssign::clone() const
 {
-    // special case: in test code, we have statements that do not belong to BBs.
-    // Thus, bb is nullptr
-    if (bb1 && bb2) {
-        return bb1->getLowAddr() < bb2->getLowAddr();
-    }
-    else {
-        // compare pointers
-        return bb1 < bb2;
-    }
-}
+    std::shared_ptr<PhiAssign> pa(new PhiAssign(m_type->clone(), m_lhs->clone()));
 
+    for (const auto &[frag, ref] : m_defs) {
+        assert(ref->getSubExp1());
 
-Statement *PhiAssign::clone() const
-{
-    PhiAssign *pa = new PhiAssign(m_type, m_lhs);
-
-    for (const PhiDefs::value_type &val : m_defs) {
-        BasicBlock *bb   = val.first;
-        const RefExp &pi = val.second;
-        assert(pi.getSubExp1());
-
-        // Clone the expression pointer, but not the statement pointer (never moves)
-        RefExp clone(pi.getSubExp1()->clone(), pi.getDef());
-        pa->m_defs.insert({ bb, RefExp(pi.getSubExp1()->clone(), pi.getDef()) });
+        // Clone the expression pointer, but not the fragment pointer (never moves)
+        pa->m_defs.insert({ frag, RefExp::get(ref->getSubExp1()->clone(), ref->getDef()) });
     }
 
     return pa;
@@ -71,16 +55,19 @@ void PhiAssign::printCompact(OStream &os) const
     }
 
     os << " := phi";
-    for (const auto &v : m_defs) {
-        Q_UNUSED(v);
-        assert(v.second.getSubExp1() != nullptr);
-        assert(*v.second.getSubExp1() == *m_lhs);
+    for (const auto &[frag, ref] : m_defs) {
+        Q_UNUSED(frag);
+        Q_UNUSED(ref);
+
+        assert(ref->getSubExp1() != nullptr);
+        assert(*ref->getSubExp1() == *m_lhs);
     }
+
     os << "{";
 
     for (auto it = m_defs.begin(); it != m_defs.end(); /* no increment */) {
-        if (it->second.getDef()) {
-            os << it->second.getDef()->getNumber();
+        if (it->second->getDef()) {
+            os << it->second->getDef()->getNumber();
         }
         else {
             os << "-";
@@ -101,13 +88,10 @@ bool PhiAssign::search(const Exp &pattern, SharedExp &result) const
         return true;
     }
 
-    for (RefExp exp : *this) {
-        assert(exp.getSubExp1() != nullptr);
+    for (const std::shared_ptr<RefExp> &ref : *this) {
+        assert(ref->getSubExp1() != nullptr);
         // Note: can't match foo{-} because of this
-        // \todo remove const_cast
-        RefExp re(exp.getSubExp1(), const_cast<Statement *>(exp.getDef()));
-
-        if (re.search(pattern, result)) {
+        if (ref->search(pattern, result)) {
             return true;
         }
     }
@@ -130,12 +114,13 @@ bool PhiAssign::searchAndReplace(const Exp &pattern, SharedExp replace, bool /*c
 
     m_lhs = m_lhs->searchReplaceAll(pattern, replace, change);
 
-    for (auto &refExp : *this) {
-        assert(refExp.getSubExp1() != nullptr);
+    for (const std::shared_ptr<RefExp> &refExp : *this) {
+        assert(refExp->getSubExp1() != nullptr);
         bool ch;
+
         // Assume that the definitions will also be replaced
-        refExp.setSubExp1(refExp.getSubExp1()->searchReplaceAll(pattern, replace, ch));
-        assert(refExp.getSubExp1());
+        refExp->setSubExp1(refExp->getSubExp1()->searchReplaceAll(pattern, replace, ch));
+        assert(refExp->getSubExp1());
         change |= ch;
     }
 
@@ -146,7 +131,7 @@ bool PhiAssign::searchAndReplace(const Exp &pattern, SharedExp replace, bool /*c
 bool PhiAssign::accept(StmtExpVisitor *visitor)
 {
     bool visitChildren = true;
-    if (!visitor->visit(this, visitChildren)) {
+    if (!visitor->visit(shared_from_this()->as<PhiAssign>(), visitChildren)) {
         return false;
     }
     else if (!visitChildren) {
@@ -156,9 +141,9 @@ bool PhiAssign::accept(StmtExpVisitor *visitor)
         return false;
     }
 
-    for (RefExp &refExp : *this) {
-        assert(refExp.getSubExp1() != nullptr);
-        if (!RefExp::get(refExp.getSubExp1(), refExp.getDef())->acceptVisitor(visitor->ev)) {
+    for (const std::shared_ptr<RefExp> &ref : *this) {
+        assert(ref->getSubExp1() != nullptr);
+        if (!ref->acceptVisitor(visitor->ev)) {
             return false;
         }
     }
@@ -170,7 +155,7 @@ bool PhiAssign::accept(StmtExpVisitor *visitor)
 bool PhiAssign::accept(StmtModifier *v)
 {
     bool visitChildren;
-    v->visit(this, visitChildren);
+    v->visit(shared_from_this()->as<PhiAssign>(), visitChildren);
 
     if (v->m_mod) {
         v->m_mod->clearModified();
@@ -180,7 +165,7 @@ bool PhiAssign::accept(StmtModifier *v)
         }
 
         if (v->m_mod->isModified()) {
-            LOG_VERBOSE("PhiAssign changed: now %1", this);
+            LOG_VERBOSE("PhiAssign changed: now %1", shared_from_this());
         }
     }
 
@@ -191,7 +176,7 @@ bool PhiAssign::accept(StmtModifier *v)
 bool PhiAssign::accept(StmtPartModifier *v)
 {
     bool visitChildren;
-    v->visit(this, visitChildren);
+    v->visit(shared_from_this()->as<PhiAssign>(), visitChildren);
     v->mod->clearModified();
 
     if (visitChildren && m_lhs->isMemOf()) {
@@ -199,139 +184,65 @@ bool PhiAssign::accept(StmtPartModifier *v)
     }
 
     if (v->mod->isModified()) {
-        LOG_VERBOSE("PhiAssign changed: now %1", this);
+        LOG_VERBOSE("PhiAssign changed: now %1", shared_from_this());
     }
 
     return true;
 }
 
 
-void PhiAssign::convertToAssign(SharedExp rhs)
-{
-    // I believe we always want to propagate to these ex-phi's; check!:
-    rhs = rhs->propagateAll();
-    // Thanks to tamlin for this cleaner way of implementing this hack
-
-    int n            = m_number; // These items disappear with the destructor below
-    BasicBlock *bb   = m_bb;
-    UserProc *p      = m_proc;
-    SharedExp lhs_   = m_lhs;
-    SharedExp rhs_   = rhs;
-    SharedType type_ = m_type;
-
-    this->~PhiAssign(); // Explicitly destroy this, but keep the memory allocated.
-    Assign *a = new (this) Assign(type_, lhs_, rhs_); // construct in-place. Note that 'a' == 'this'
-    a->setNumber(n);
-    a->setProc(p);
-    a->setBB(bb);
-}
-
-
 void PhiAssign::simplify()
 {
     m_lhs = m_lhs->simplify();
-
-    if (m_defs.empty()) {
-        return;
-    }
-
-    bool allSame        = true;
-    Statement *firstDef = begin()->getDef();
-
-    for (auto &refExp : *this) {
-        if (refExp.getDef() != firstDef) {
-            allSame = false;
-            break;
-        }
-    }
-
-    if (allSame) {
-        LOG_VERBOSE("all the same in %1", this);
-        this->convertToAssign(RefExp::get(m_lhs, firstDef));
-        return;
-    }
-
-    bool onlyOneNotThis = true;
-    Statement *notthis  = STMT_WILD;
-
-    for (auto &refExp : *this) {
-        if (refExp.getDef() && !refExp.getDef()->isImplicit() && refExp.getDef()->isPhi() &&
-            refExp.getDef() == this) {
-            continue; // ok
-        }
-        else if (notthis == STMT_WILD) {
-            notthis = refExp.getDef();
-        }
-        else {
-            onlyOneNotThis = false;
-            break;
-        }
-    }
-
-    if (onlyOneNotThis && (notthis != STMT_WILD)) {
-        LOG_VERBOSE("All but one not this in %1", this);
-
-        this->convertToAssign(RefExp::get(m_lhs, notthis));
-        return;
-    }
 }
 
 
-void PhiAssign::putAt(BasicBlock *bb, Statement *def, SharedExp e)
+void PhiAssign::putAt(IRFragment *frag, const SharedStmt &def, SharedExp e)
 {
     assert(e); // should be something surely
+    assert(*e == *getLeft());
 
     // Can't use operator[] here since PhiInfo is not default-constructible
-    PhiDefs::iterator it = m_defs.find(bb);
+    PhiDefs::iterator it = m_defs.find(frag);
     if (it == m_defs.end()) {
-        m_defs.insert({ bb, RefExp(e, def) });
+        m_defs.insert({ frag, RefExp::get(e, def) });
     }
     else {
-        it->second.setDef(def);
-        it->second.setSubExp1(e);
+        it->second->setDef(def);
+        it->second->setSubExp1(e);
     }
 }
 
 
-void PhiAssign::enumerateParams(std::list<SharedExp> &le)
-{
-    for (RefExp &refExp : *this) {
-        assert(refExp.getSubExp1() != nullptr);
-        auto r = RefExp::get(refExp.getSubExp1(), refExp.getDef());
-        le.push_back(r);
-    }
-}
-
-
-const Statement *PhiAssign::getStmtAt(BasicBlock *idx) const
+SharedConstStmt PhiAssign::getStmtAt(IRFragment *idx) const
 {
     PhiDefs::const_iterator it = m_defs.find(idx);
-    return (it != m_defs.end()) ? it->second.getDef() : nullptr;
+    return (it != m_defs.end()) ? it->second->getDef() : nullptr;
 }
 
 
-Statement *PhiAssign::getStmtAt(BasicBlock *idx)
+SharedStmt PhiAssign::getStmtAt(IRFragment *idx)
 {
     PhiDefs::iterator it = m_defs.find(idx);
-    return (it != m_defs.end()) ? it->second.getDef() : nullptr;
+    return (it != m_defs.end()) ? it->second->getDef() : nullptr;
 }
 
 
 void PhiAssign::removeAllReferences(const std::shared_ptr<RefExp> &refExp)
 {
     for (PhiDefs::iterator pi = m_defs.begin(); pi != m_defs.end();) {
-        RefExp &p = pi->second;
-        assert(p.getSubExp1());
+        std::shared_ptr<RefExp> &p = pi->second;
+        assert(p->getSubExp1());
 
-        if (p == *refExp) {        // Will we ever see this?
+        if (*p == *refExp) {       // Will we ever see this?
             pi = m_defs.erase(pi); // Erase this phi parameter
             continue;
         }
 
         // Chase the definition
-        Statement *def = p.getDef();
+        SharedStmt def = p->getDef();
         if (def && def->isAssign()) {
-            SharedExp rhs = static_cast<Assign *>(def)->getRight();
+            SharedExp rhs = def->as<Assign>()->getRight();
 
             if (*rhs == *refExp) {     // Check if RHS is a single reference to this
                 pi = m_defs.erase(pi); // Yes, erase this phi parameter

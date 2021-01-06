@@ -14,7 +14,7 @@
 #include "boomerang/ssl/statements/CallStatement.h"
 
 
-CallBypasser::CallBypasser(Statement *enclosing)
+CallBypasser::CallBypasser(const SharedStmt &enclosing)
     : m_enclosingStmt(enclosing)
 {
 }
@@ -22,22 +22,16 @@ CallBypasser::CallBypasser(Statement *enclosing)
 
 SharedExp CallBypasser::postModify(const std::shared_ptr<RefExp> &exp)
 {
-    // If child was modified, simplify now
-    SharedExp ret = exp;
+    // Note: r (the pointer) will always == ret (also the pointer) here,
+    // so the below is safe and avoids a cast
+    SharedStmt def = exp->getDef();
+    SharedExp ret  = exp;
 
-    if (!(m_unchanged & m_mask)) {
-        ret = exp->simplify();
-    }
-
-    m_mask >>= 1;
-    // Note: r (the pointer) will always == ret (also the pointer) here, so the below is safe and
-    // avoids a cast
-    Statement *def      = exp->getDef();
-    CallStatement *call = dynamic_cast<CallStatement *>(def);
-
-    if (call) {
-        assert(std::dynamic_pointer_cast<RefExp>(ret));
+    if (def && def->isCall()) {
+        std::shared_ptr<CallStatement> call = def->as<CallStatement>();
         bool ch;
+
+        assert(ret->isSubscript());
         ret = call->bypassRef(ret->access<RefExp>(), ch);
 
         if (ch) {
@@ -45,10 +39,8 @@ SharedExp CallBypasser::postModify(const std::shared_ptr<RefExp> &exp)
             setModified(true);
             // Now have to recurse to do any further bypassing that may be required
             // E.g. bypass the two recursive calls in fibo?? FIXME: check!
-            CallBypasser *bp = new CallBypasser(m_enclosingStmt);
-            SharedExp result = ret->acceptModifier(bp);
-            delete bp;
-            return result;
+            auto bp = std::make_unique<CallBypasser>(m_enclosingStmt);
+            return ret->acceptModifier(bp.get());
         }
     }
 
@@ -59,19 +51,5 @@ SharedExp CallBypasser::postModify(const std::shared_ptr<RefExp> &exp)
 
 SharedExp CallBypasser::postModify(const std::shared_ptr<Location> &exp)
 {
-    // Hack to preserve a[m[x]]. Can likely go when ad hoc TA goes.
-    bool isAddrOfMem = exp->isAddrOf() && exp->getSubExp1()->isMemOf();
-
-    if (isAddrOfMem) {
-        return exp;
-    }
-
-    SharedExp ret = exp;
-
-    if (!(m_unchanged & m_mask)) {
-        ret = exp->simplify();
-    }
-
-    m_mask >>= 1;
-    return ret;
+    return exp->simplify();
 }

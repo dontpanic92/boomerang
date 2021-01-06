@@ -13,10 +13,13 @@
 #include "boomerang/core/Watcher.h"
 #include "boomerang/db/Prog.h"
 #include "boomerang/db/binary/BinarySymbolTable.h"
+#include "boomerang/db/proc/UserProc.h"
 #include "boomerang/decomp/ProgDecompiler.h"
 #include "boomerang/util/CallGraphDotWriter.h"
 #include "boomerang/util/ProgSymbolWriter.h"
 #include "boomerang/util/log/Log.h"
+
+#include <stdexcept>
 
 
 Project::Project()
@@ -28,6 +31,10 @@ Project::Project()
 
 Project::~Project()
 {
+    // Named types need to be unloaded before Symbol Provider plugins are unloaded.
+    // This ensures that no library function signatures held by FuncTypes remain
+    // in the main program when unloading Symbol Provider plugins.
+    Type::clearNamedTypes();
 }
 
 
@@ -212,6 +219,7 @@ bool Project::decompileBinaryFile()
         return false;
     }
 
+    LOG_MSG("Decompiling...");
     ProgDecompiler dcomp(m_prog.get());
     dcomp.decompile();
 
@@ -265,12 +273,7 @@ IFrontEnd *Project::createFrontEnd()
         Plugin *plugin = nullptr;
 
         switch (getLoadedBinaryFile()->getMachine()) {
-        case Machine::PENTIUM:
-            plugin = m_pluginManager->getPluginByName("X86 FrontEnd plugin");
-            break;
-        case Machine::SPARC:
-            plugin = m_pluginManager->getPluginByName("SPARC FrontEnd plugin");
-            break;
+        case Machine::X86: plugin = m_pluginManager->getPluginByName("X86 FrontEnd plugin"); break;
         case Machine::PPC: plugin = m_pluginManager->getPluginByName("PPC FrontEnd plugin"); break;
         case Machine::ST20:
             plugin = m_pluginManager->getPluginByName("ST20 FrontEnd plugin");
@@ -299,7 +302,7 @@ IFrontEnd *Project::createFrontEnd()
 void Project::loadSymbols()
 {
     // Add symbols from -s switch(es)
-    for (const std::pair<Address, QString> &elem : getSettings()->m_symbolMap) {
+    for (const std::pair<const Address, QString> &elem : getSettings()->m_symbolMap) {
         m_loadedBinary->getSymbols()->createSymbol(elem.first, elem.second);
     }
 
@@ -318,7 +321,7 @@ bool Project::decodeAll()
         LOG_MSG("Decoding entry point...");
     }
 
-    if (!m_fe || !m_fe->decodeEntryPointsRecursive(getSettings()->decodeMain)) {
+    if (!m_fe || (getSettings()->decodeMain && !m_fe->disassembleEntryPoints())) {
         LOG_ERROR("Aborting load due to decode failure");
         return false;
     }
@@ -332,7 +335,7 @@ bool Project::decodeAll()
     if (getSettings()->decodeChildren) {
         // this causes any undecoded userprocs to be decoded
         LOG_MSG("Decoding anything undecoded...");
-        if (!m_fe->decodeUndecoded()) {
+        if (!m_fe->disassembleAll()) {
             LOG_ERROR("Aborting load due to decode failure");
             return false;
         }
@@ -393,10 +396,12 @@ void Project::addWatcher(IWatcher *watcher)
 }
 
 
-void Project::alertDecompileDebugPoint(UserProc *p, const char *description)
+void Project::alertDecompileDebugPoint(UserProc *p, const QString &description)
 {
+    p->debugPrintAll(description);
+
     for (IWatcher *elem : m_watchers) {
-        elem->onDecompileDebugPoint(p, description);
+        elem->onDecompileDebugPoint(p, qPrintable(description));
     }
 }
 

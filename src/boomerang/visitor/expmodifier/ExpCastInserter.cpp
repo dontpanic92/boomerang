@@ -71,7 +71,7 @@ SharedExp ExpCastInserter::postModify(const std::shared_ptr<RefExp> &exp)
 
     if (base->isMemOf()) {
         // Check to see if the address expression needs type annotation
-        Statement *def = exp->getDef();
+        SharedStmt def = exp->getDef();
 
         if (!def) {
             LOG_WARN("RefExp def is null");
@@ -91,7 +91,7 @@ SharedExp ExpCastInserter::postModify(const std::shared_ptr<Binary> &exp)
     OPER op = exp->getOper();
 
     switch (op) {
-    // This case needed for e.g. test/pentium/switch_gcc:
+    // This case needed for e.g. test/x86/switch_gcc:
     case opLessUns:
     case opGtrUns:
     case opLessEqUns:
@@ -105,7 +105,6 @@ SharedExp ExpCastInserter::postModify(const std::shared_ptr<Binary> &exp)
 
         break;
 
-    // This case needed for e.g. test/sparc/minmax2, if %g1 is declared as unsigned int
     case opLess:
     case opGtr:
     case opLessEq:

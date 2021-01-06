@@ -22,6 +22,8 @@
 #include <QBuffer>
 #include <QFile>
 
+#include <stdexcept>
+
 
 struct SectionParam
 {
@@ -65,12 +67,7 @@ ElfBinaryLoader::~ElfBinaryLoader()
 {
     // Delete the array of import stubs
     delete[] m_importStubs;
-    delete[] m_shLink;
-    delete[] m_shInfo;
-
     m_importStubs = nullptr;
-    m_shLink      = nullptr;
-    m_shInfo      = nullptr;
 }
 
 
@@ -166,15 +163,17 @@ bool ElfBinaryLoader::loadFromMemory(QByteArray &img)
     }
 
     // Set up the m_sh_link and m_sh_info arrays
-    if (m_shLink) {
-        delete[] m_shLink;
-    }
-    if (m_shInfo) {
-        delete[] m_shInfo;
-    }
 
-    m_shLink = new Elf32_Word[numSections];
-    m_shInfo = new Elf32_Word[numSections];
+    try {
+        m_shLink.reset(new Elf32_Word[numSections]);
+        m_shInfo.reset(new Elf32_Word[numSections]);
+    }
+    catch (const std::bad_alloc &) {
+        m_shLink.reset();
+        m_shInfo.reset();
+        LOG_ERROR("Cannot load ELF file: Not enough memory");
+        return false;
+    }
 
     // Set up section header string table pointer
     const Elf32_Half stringSectionIndex = elfRead2(&m_elfHeader->e_shstrndx);
@@ -331,7 +330,7 @@ bool ElfBinaryLoader::loadFromMemory(QByteArray &img)
             }
 
             if (par.sectionType == SHT_STRTAB) {
-                sect->setAttributeForRange("StringsSection", true, sect->getSourceAddr(),
+                sect->setAttributeForRange("StringsSection", sect->getSourceAddr(),
                                            sect->getSourceAddr() + sect->getSize());
             }
         }
@@ -496,7 +495,7 @@ void ElfBinaryLoader::processSymbol(Translated_ElfSym &sym, int e_type, int i,
     const BinarySection *siPlt = m_binaryFile->getImage()->getSectionByName(".plt");
 
     if (sym.Value.isZero() && siPlt) { // && i < max_i_for_hack) {
-        // Special hack for gcc circa 3.3.3: (e.g. test/pentium/settest).  The value in the dynamic
+        // Special hack for gcc circa 3.3.3: (e.g. test/x86/settest).  The value in the dynamic
         // symbol table is zero!  I was assuming that index i in the dynamic symbol table would
         // always correspond to index i in the .plt section, but for fedora2_true, this doesn't
         // work. So we have to look in the .rel[a].plt section. Thanks, gcc!  Note that this hack
@@ -602,7 +601,7 @@ void ElfBinaryLoader::addSymbolsForSection(int secIndex)
         translatedSym.Type       = ELF32_ST_TYPE(m_symbolSection[i].st_info);
         translatedSym.Binding    = ELF32_ST_BIND(m_symbolSection[i].st_info);
         translatedSym.Visibility = ELF32_ST_VISIBILITY(m_symbolSection[i].st_other);
-        translatedSym.SymbolSize = ELF32_ST_VISIBILITY(m_symbolSection[i].st_size);
+        translatedSym.SymbolSize = m_symbolSection[i].st_size;
         translatedSym.SectionIdx = elfRead2(&m_symbolSection[i].st_shndx);
         translatedSym.Value      = val;
 
@@ -654,8 +653,10 @@ void ElfBinaryLoader::addRelocsAsSyms(uint32_t relSecIdx)
             Address symbolAddr = Address(elfRead4(&m_symbolSection[symIndex].st_value));
 
             if (m_symbolSection[symIndex].st_info & STT_SECTION) {
-                symbolAddr = m_elfSections[elfRead2(&m_symbolSection[symIndex].st_shndx)]
-                                 .SourceAddr;
+                const Elf32_Half shndx = elfRead2(&m_symbolSection[symIndex].st_shndx);
+                if (Util::inRange(shndx, 0, m_elfSections.size())) {
+                    symbolAddr = m_elfSections[shndx].SourceAddr;
+                }
             }
 
             // Overwrite the relocation value... ?
@@ -735,11 +736,8 @@ Machine ElfBinaryLoader::getMachine() const
 {
     const SWord elfMachine = elfRead2(&m_elfHeader->e_machine);
 
-    if ((elfMachine == EM_SPARC) || (elfMachine == EM_SPARC32PLUS)) {
-        return Machine::SPARC;
-    }
-    else if (elfMachine == EM_386) {
-        return Machine::PENTIUM;
+    if (elfMachine == EM_386) {
+        return Machine::X86;
     }
     else if (elfMachine == EM_PPC) {
         return Machine::PPC;
@@ -862,7 +860,6 @@ void ElfBinaryLoader::applyRelocations()
         if (ps.sectionType == SHT_RELA) {
             const Elf32_Rela *relaEntries = reinterpret_cast<const Elf32_Rela *>(
                 ps.imagePtr.value());
-            const DWord numEntries = ps.Size / sizeof(Elf32_Rela);
 
             if (relaEntries == nullptr) {
                 LOG_WARN("Cannot read relocation entries from invalid section %1", i);
@@ -876,28 +873,6 @@ void ElfBinaryLoader::applyRelocations()
             }
 
             switch (machine) {
-            case EM_SPARC:
-                // NOTE: the r_offset is different for .o files (E_REL in the e_type header field)
-                // than for exe's and shared objects!
-                for (DWord u = 0; u < numEntries; u++) {
-                    Elf32_Byte relType = ELF32_R_TYPE(elfRead4(&relaEntries[u].r_info));
-                    // Elf32_Word symTabIndex = ELF32_R_SYM(elfRead4(&relaEntries[u].r_info));
-
-                    switch (relType) {
-                    case R_SPARC_NONE: // just ignore (common)
-                        break;
-
-                    // TODO These relocation types need to be implemented.
-                    case R_SPARC_HI22:
-                    case R_SPARC_LO10:
-                    case R_SPARC_COPY:
-                    case R_SPARC_GLOB_DAT:
-                    case R_SPARC_JMP_SLOT:
-                    default: LOG_WARN("Unhandled SPARC relocation type %1", relType); break;
-                    }
-                }
-                break;
-
             default: LOG_WARN("Unhandled relocation!"); break;
             }
         }
@@ -1003,6 +978,10 @@ void ElfBinaryLoader::applyRelocations()
                         break;
 
                     case R_386_PC32: // S + A - P
+                        if (assocSymbols == nullptr) {
+                            break; // cannot do relocation for this entry
+                        }
+
                         if (ELF32_ST_TYPE(assocSymbols[symbolIdx].st_info) == STT_SECTION) {
                             S                           = Address::ZERO;
                             const Elf32_Half sectionIdx = elfRead2(

@@ -9,70 +9,280 @@
 
 include(boomerang-utils)
 
-set(TESTS
-    exp/ExpTest
-    parser/ParserTest
-    type/ArrayTypeTest
-    type/BooleanTypeTest
-    type/CharTypeTest
-    type/CompoundTypeTest
-    type/FloatTypeTest
-    type/FuncTypeTest
-    type/NamedTypeTest
-    type/IntegerTypeTest
-    type/PointerTypeTest
-    type/MeetTest
-    RegDBTest
-    RTLTest
-    type/UnionTypeTest
+
+BOOMERANG_ADD_TEST(
+    NAME ExpTest
+    SOURCES exp/ExpTest.h exp/ExpTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
 )
 
 
-# These tests require the ELF loader
-set(TESTS_WITH_ELF
-    statements/StatementTest
+BOOMERANG_ADD_TEST(
+    NAME ParserTest
+    SOURCES parser/ParserTest.h parser/ParserTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
 )
 
-set(TESTS_WITH_WIN32
-    type/TypeTest
+
+BOOMERANG_ADD_TEST(
+    NAME AssignTest
+    SOURCES statements/AssignTest.h statements/AssignTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
 )
 
-foreach(t ${TESTS})
-    string(REGEX REPLACE ".*/" "" TEST_NAME ${t})
-    BOOMERANG_ADD_TEST(
-        NAME ${TEST_NAME}
-        SOURCES ${t}.h ${t}.cpp
-        LIBRARIES
-            ${DEBUG_LIB}
-            boomerang
-            ${CMAKE_THREAD_LIBS_INIT}
-    )
-endforeach()
+
+BOOMERANG_ADD_TEST(
+    NAME BoolAssignTest
+    SOURCES statements/BoolAssignTest.h statements/BoolAssignTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
+)
 
 
-if (BOOMERANG_BUILD_LOADER_Elf)
-    foreach(t ${TESTS_WITH_ELF})
-        BOOMERANG_ADD_TEST(
-            NAME ${t}
-            SOURCES ${t}.h ${t}.cpp
-            LIBRARIES
-                ${DEBUG_LIB}
-                boomerang
-                ${CMAKE_THREAD_LIBS_INIT}
-        )
-    endforeach()
-endif (BOOMERANG_BUILD_LOADER_Elf)
+BOOMERANG_ADD_TEST(
+    NAME BranchStatementTest
+    SOURCES statements/BranchStatementTest.h statements/BranchStatementTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
+)
 
 
-if (BOOMERANG_BUILD_LOADER_Win32)
-    foreach(t ${TESTS_WITH_WIN32})
-        BOOMERANG_ADD_TEST(
-            NAME ${t}
-            SOURCES ${t}.h ${t}.cpp
-            LIBRARIES
-                ${DEBUG_LIB}
-                boomerang
-                ${CMAKE_THREAD_LIBS_INIT}
-        )
-    endforeach()
-endif (BOOMERANG_BUILD_LOADER_Win32)
+BOOMERANG_ADD_TEST(
+    NAME CallStatementTest
+    SOURCES statements/CallStatementTest.h statements/CallStatementTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
+)
+
+
+BOOMERANG_ADD_TEST(
+    NAME CaseStatementTest
+    SOURCES statements/CaseStatementTest.h statements/CaseStatementTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
+)
+
+
+BOOMERANG_ADD_TEST(
+    NAME GotoStatementTest
+    SOURCES statements/GotoStatementTest.h statements/GotoStatementTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
+)
+
+
+BOOMERANG_ADD_TEST(
+    NAME ImplicitAssignTest
+    SOURCES statements/ImplicitAssignTest.h statements/ImplicitAssignTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
+)
+
+
+BOOMERANG_ADD_TEST(
+    NAME PhiAssignTest
+    SOURCES statements/PhiAssignTest.h statements/PhiAssignTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
+)
+
+
+BOOMERANG_ADD_TEST(
+    NAME StatementHelperTest
+    SOURCES statements/StatementHelperTest.h statements/StatementHelperTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
+)
+
+
+BOOMERANG_ADD_TEST(
+    NAME StatementTest
+    SOURCES statements/StatementTest.h statements/StatementTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
+    DEPENDENCIES
+        boomerang-ElfLoader
+        boomerang-X86FrontEnd
+)
+
+
+BOOMERANG_ADD_TEST(
+    NAME ReturnStatementTest
+    SOURCES statements/ReturnStatementTest.h statements/ReturnStatementTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
+    DEPENDENCIES
+        boomerang-ElfLoader
+        boomerang-X86FrontEnd
+)
+
+
+BOOMERANG_ADD_TEST(
+    NAME ArrayTypeTest
+    SOURCES type/ArrayTypeTest.h type/ArrayTypeTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
+)
+
+
+BOOMERANG_ADD_TEST(
+    NAME BooleanTypeTest
+    SOURCES type/BooleanTypeTest.h type/BooleanTypeTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
+)
+
+
+BOOMERANG_ADD_TEST(
+    NAME CharTypeTest
+    SOURCES type/CharTypeTest.h type/CharTypeTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
+)
+
+
+BOOMERANG_ADD_TEST(
+    NAME CompoundTypeTest
+    SOURCES type/CompoundTypeTest.h type/CompoundTypeTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
+)
+
+
+BOOMERANG_ADD_TEST(
+    NAME FloatTypeTest
+    SOURCES type/FloatTypeTest.h type/FloatTypeTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
+)
+
+
+BOOMERANG_ADD_TEST(
+    NAME FuncTypeTest
+    SOURCES type/FuncTypeTest.h type/FuncTypeTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
+)
+
+
+BOOMERANG_ADD_TEST(
+    NAME NamedTypeTest
+    SOURCES type/NamedTypeTest.h type/NamedTypeTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
+)
+
+
+BOOMERANG_ADD_TEST(
+    NAME IntegerTypeTest
+    SOURCES type/IntegerTypeTest.h type/IntegerTypeTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
+)
+
+
+BOOMERANG_ADD_TEST(
+    NAME PointerTypeTest
+    SOURCES type/PointerTypeTest.h type/PointerTypeTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
+)
+
+
+BOOMERANG_ADD_TEST(
+    NAME MeetTest
+    SOURCES type/MeetTest.h type/MeetTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
+)
+
+
+BOOMERANG_ADD_TEST(
+    NAME TypeTest
+    SOURCES type/TypeTest.h type/TypeTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
+    DEPENDENCIES
+        boomerang-Win32Loader
+)
+
+
+BOOMERANG_ADD_TEST(
+    NAME UnionTypeTest
+    SOURCES type/UnionTypeTest.h type/UnionTypeTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
+)
+
+
+BOOMERANG_ADD_TEST(
+    NAME RegDBTest
+    SOURCES RegDBTest.h RegDBTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
+)
+
+
+BOOMERANG_ADD_TEST(
+    NAME RTLTest
+    SOURCES RTLTest.h RTLTest.cpp
+    LIBRARIES
+        ${DEBUG_LIB}
+        boomerang
+        ${CMAKE_THREAD_LIBS_INIT}
+)

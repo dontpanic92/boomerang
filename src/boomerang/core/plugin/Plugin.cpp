@@ -9,13 +9,15 @@
 #pragma endregion License
 #include "Plugin.h"
 
+#include <stdexcept>
+
 
 Plugin::Plugin(Project *project, const QString &pluginPath)
     : m_pluginHandle(pluginPath)
     , m_ifc(nullptr)
 {
     if (!init(project)) {
-        throw std::runtime_error("Plugin initialization function not found!");
+        throw std::runtime_error("Plugin initialization failed!");
     }
 }
 

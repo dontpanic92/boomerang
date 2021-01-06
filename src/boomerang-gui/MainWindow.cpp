@@ -514,7 +514,7 @@ void MainWindow::showDecompilingProc(const QString &name)
 
     if (!foundit.isEmpty()) {
         ui->twProcTree->setCurrentItem(foundit.first(), 0);
-        foundit.first()->setTextColor(0, QColor("blue"));
+        foundit.first()->setForeground(0, QColor("blue"));
         m_numDecompiledProcs++;
     }
 
@@ -749,6 +749,7 @@ void MainWindow::on_twModuleTree_itemDoubleClicked(QTreeWidgetItem *item, int co
         QFile file(filename);
 
         if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            delete n;
             return;
         }
 
@@ -877,6 +878,7 @@ void MainWindow::on_tblLibProcs_cellDoubleClicked(int row, int column)
         QFile file(filename);
 
         if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            delete n;
             return;
         }
 

@@ -17,6 +17,7 @@
 #include "boomerang/ssl/exp/Const.h"
 #include "boomerang/ssl/exp/Location.h"
 #include "boomerang/ssl/exp/RefExp.h"
+#include "boomerang/ssl/statements/Assign.h"
 #include "boomerang/ssl/statements/CallStatement.h"
 #include "boomerang/util/log/Log.h"
 #include "boomerang/visitor/expmodifier/CallBypasser.h"
@@ -25,11 +26,55 @@
 #include "boomerang/visitor/stmtmodifier/StmtPartModifier.h"
 
 
-Statement::Statement()
-    : m_bb(nullptr)
+SharedStmt Statement::wild = SharedStmt(new Assign(Terminal::get(opNil), Terminal::get(opNil)));
+static uint32 m_nextStmtID = 0;
+
+
+Statement::Statement(StmtType kind)
+    : m_fragment(nullptr)
     , m_proc(nullptr)
     , m_number(0)
+    , m_kind(kind)
 {
+    m_id = m_nextStmtID++;
+}
+
+
+Statement::Statement(const Statement &other)
+    : enable_shared_from_this(other)
+    , m_fragment(other.m_fragment)
+    , m_proc(other.m_proc)
+    , m_number(other.m_number)
+    , m_kind(other.m_kind)
+{
+    m_id = m_nextStmtID++;
+}
+
+
+Statement &Statement::operator=(const Statement &other)
+{
+    if (this == &other) {
+        return *this;
+    }
+
+    m_fragment = other.m_fragment;
+    m_proc     = other.m_proc;
+    m_number   = other.m_number;
+    m_id       = m_nextStmtID++;
+
+    return *this;
+}
+
+
+bool Statement::operator==(const Statement &rhs) const
+{
+    return getID() == rhs.getID();
+}
+
+
+bool Statement::operator<(const Statement &rhs) const
+{
+    return getID() < rhs.getID();
 }
 
 
@@ -53,7 +98,23 @@ void Statement::setProc(UserProc *proc)
 }
 
 
-OStream &operator<<(OStream &os, const Statement *s)
+void Statement::getDefinitions(LocationSet &, bool) const
+{
+}
+
+
+bool Statement::definesLoc(SharedExp) const
+{
+    return false;
+}
+
+
+void Statement::simplifyAddr()
+{
+}
+
+
+OStream &operator<<(OStream &os, const SharedStmt &s)
 {
     if (s == nullptr) {
         os << "nullptr ";
@@ -94,11 +155,7 @@ bool Statement::canPropagateToExp(const Exp &exp)
         return false;
     }
 
-    const Statement *def = ref.getDef();
-
-    //    if (def == this)
-    // Don't propagate to self! Can happen with %pc's (?!)
-    //        return false;
+    const SharedConstStmt def = ref.getDef();
     if (def->isNullStatement()) {
         // Don't propagate a null statement! Can happen with %pc's (would have no effect, and would
         // infinitely loop)
@@ -109,171 +166,107 @@ bool Statement::canPropagateToExp(const Exp &exp)
         return false; // Only propagate ordinary assignments (so far)
     }
 
-    const Assign *adef = static_cast<const Assign *>(def);
-
-    if (adef->getType()->isArray()) {
-        // Assigning to an array, don't propagate (Could be alias problems?)
-        return false;
-    }
-
-    return true;
+    // Assigning to an array, don't propagate (Could be alias problems?)
+    return !def->as<const Assign>()->getType()->isArray();
 }
 
 
-bool Statement::propagateTo(Settings *settings, std::map<SharedExp, int, lessExpStar> *destCounts,
-                            LocationSet *usedByDomPhi, bool force)
+bool Statement::propagateToThis(int propMaxDepth, const ExpIntMap *destCounts, bool force)
 {
-    bool change            = false;
-    int changes            = 0;
-    const int propMaxDepth = settings->propMaxDepth;
+    bool thisChange = false;
+    int changes     = 0;
 
     do {
-        LocationSet exps;
         // addUsedLocs(..,true) -> true to also add uses from collectors. For example, want to
-        // propagate into the reaching definitions of calls. Third parameter defaults to false, to
-        // find all locations, not just those inside m[...]
-        addUsedLocs(exps, true);
-        change = false; // True if changed this iteration of the do/while loop
+        // propagate into the reaching definitions of calls. Third parameter is false to find
+        // all locations, not just those inside m[...]
+        LocationSet usedExps;
+        addUsedLocs(usedExps, true, false);
+        thisChange = false; // True if changed this iteration of the do/while loop
 
         // Example: m[r24{10}] := r25{20} + m[r26{30}]
         // exps has r24{10}, r25{20}, m[r26{30}], r26{30}
-        for (SharedExp e : exps) {
-            if (!canPropagateToExp(*e)) {
+        for (SharedExp usedHere : usedExps) {
+            if (!Statement::canPropagateToExp(*usedHere)) {
                 continue;
             }
 
-            assert(dynamic_cast<Assignment *>(e->access<RefExp>()->getDef()) != nullptr);
-            Assignment *def = static_cast<Assignment *>(e->access<RefExp>()->getDef());
-            SharedExp rhs   = def->getRight();
+            assert(usedHere->access<RefExp>()->getDef()->isAssignment());
+            std::shared_ptr<Assignment>
+                def       = usedHere->access<RefExp>()->getDef()->as<Assignment>();
+            SharedExp rhs = def->getRight();
 
-            // If force is true, ignore the fact that a memof should not be propagated (for switch
-            // analysis)
+            // Must never propagate unsubscripted memofs, or memofs that don't yet have symbols.
+            // You could be propagating past a definition, thereby invalidating the IR.
+            // If force is true, ignore the fact that a memof should not be propagated
+            // (for switch analysis)
             if (rhs->containsBadMemof() && !(force && rhs->isMemOf())) {
-                // Must never propagate unsubscripted memofs, or memofs that don't yet have symbols.
-                // You could be propagating past a definition, thereby invalidating the IR
                 continue;
             }
 
-            SharedExp lhs = def->getLeft();
-
-            if (settings->experimental) {
-                // This is Mike's experimental propagation limiting heuristic. At present, it is:
-                // for each component of def->rhs
-                //   test if the base expression is in the set usedByDomPhi
-                //     if so, check if this statement OW overwrites a parameter (like ebx = ebx-1)
-                //     if so, check for propagating past this overwriting statement, i.e.
-                //        domNum(def) <= domNum(OW) && dimNum(OW) < domNum(def)
-                //        if so, don't propagate (heuristic takes effect)
-                if (usedByDomPhi) {
-                    LocationSet rhsComps;
-                    rhs->addUsedLocs(rhsComps);
-                    LocationSet::iterator rcit;
-
-                    for (rcit = rhsComps.begin(); rcit != rhsComps.end(); ++rcit) {
-                        if (!(*rcit)->isSubscript()) {
-                            continue; // Sometimes %pc sneaks in
-                        }
-
-                        SharedExp rhsBase = (*rcit)->getSubExp1();
-                        // We don't know the statement number for the one definition in usedInDomPhi
-                        // that might exist, so we use findNS()
-                        SharedExp OW = usedByDomPhi->findNS(rhsBase);
-
-                        if (OW) {
-                            Statement *OWdef = OW->access<RefExp>()->getDef();
-
-                            if (!OWdef->isAssign()) {
-                                continue;
-                            }
-
-                            SharedExp lhsOWdef = static_cast<Assign *>(OWdef)->getLeft();
-                            LocationSet OWcomps;
-                            def->addUsedLocs(OWcomps);
-
-                            bool isOverwrite = false;
-
-                            for (const SharedExp &loc : OWcomps) {
-                                if (loc->equalNoSubscript(*lhsOWdef)) {
-                                    isOverwrite = true;
-                                    break;
-                                }
-                            }
-
-                            if (isOverwrite) {
-                                break;
-                            }
-
-                            if (OW != nullptr) {
-                                LOG_MSG("OW is %1", OW);
-                            }
-                        }
-                    }
-                }
-            }
-
+            const SharedExp lhs = def->getLeft();
 
             // Check if the -l flag (propMaxDepth) prevents this propagation,
             // but always propagate to %flags
             if (!destCounts || lhs->isFlags() || def->getRight()->containsFlags()) {
-                change |= doPropagateTo(e, def, settings);
+                thisChange |= replaceRef(usedHere, def);
             }
             else {
-                std::map<SharedExp, int, lessExpStar>::iterator ff = destCounts->find(e);
+                ExpIntMap::const_iterator ff = destCounts->find(usedHere);
 
                 if (ff == destCounts->end()) {
-                    change |= doPropagateTo(e, def, settings);
+                    thisChange |= replaceRef(usedHere, def);
                 }
                 else if (ff->second <= 1) {
-                    change |= doPropagateTo(e, def, settings);
+                    thisChange |= replaceRef(usedHere, def);
                 }
                 else if (rhs->getComplexityDepth(m_proc) < propMaxDepth) {
-                    change |= doPropagateTo(e, def, settings);
+                    thisChange |= replaceRef(usedHere, def);
                 }
             }
         }
-    } while (change && ++changes < 10);
+    } while (thisChange && ++changes < 10);
 
     // Simplify is very costly, especially for calls.
-    // I hope that doing one simplify at the end will not affect any
-    // result...
+    // I hope that doing one simplify at the end will not affect any result...
     simplify();
 
-    // Note: change is only for the last time around the do/while loop
     return changes > 0;
 }
 
 
-bool Statement::propagateFlagsTo(Settings *settings)
+bool Statement::propagateFlagsToThis()
 {
-    bool change = false;
-    int changes = 0;
+    bool thisChange = false;
+    int changes     = 0;
 
     do {
-        LocationSet exps;
-        addUsedLocs(exps, true);
+        LocationSet usedExps;
+        addUsedLocs(usedExps, true);
 
-        for (SharedExp e : exps) {
-            if (!e->isSubscript()) {
+        for (SharedExp usedHere : usedExps) {
+            if (!usedHere->isSubscript()) {
                 continue; // e.g. %pc
             }
 
-            Assignment *def = dynamic_cast<Assignment *>(e->access<RefExp>()->getDef());
+            const std::shared_ptr<Assignment> def = std::dynamic_pointer_cast<Assignment>(
+                usedHere->access<RefExp>()->getDef());
 
-            if ((def == nullptr) ||
-                (nullptr == def->getRight())) { // process if it has definition with rhs
+            // process only if it has definition with rhs
+            if (!def || !def->getRight()) {
                 continue;
             }
 
-            SharedExp base = e->access<Exp, 1>(); // Either RefExp or Location ?
-
+            const SharedExp base = usedHere->access<Exp, 1>(); // Either RefExp or Location ?
             if (base->isFlags() || base->isMainFlag()) {
-                change |= doPropagateTo(e, def, settings);
+                thisChange |= replaceRef(usedHere, def);
             }
         }
-    } while (change && ++changes < 10);
+    } while (thisChange && ++changes < 10);
 
     simplify();
-    return change;
+
+    return changes > 0;
 }
 
 
@@ -283,28 +276,9 @@ void Statement::setTypeForExp(SharedExp, SharedType)
 }
 
 
-bool Statement::doPropagateTo(const SharedExp &e, Assignment *def, Settings *settings)
-{
-    // Respect the -p N switch
-    if (settings->numToPropagate >= 0) {
-        if (settings->numToPropagate == 0) {
-            return false;
-        }
-
-        settings->numToPropagate--;
-    }
-
-    LOG_VERBOSE2("Propagating %1 into %2", def, this);
-    const bool change = replaceRef(e, def);
-    LOG_VERBOSE2("    result %1", this);
-    return change;
-}
-
-
-bool Statement::replaceRef(SharedExp e, Assignment *def)
+bool Statement::replaceRef(SharedExp e, const std::shared_ptr<Assignment> &def)
 {
     SharedExp rhs = def->getRight();
-
     assert(rhs);
 
     SharedExp base = e->getSubExp1();
@@ -331,7 +305,15 @@ bool Statement::replaceRef(SharedExp e, Assignment *def)
      *                     P3   opNil
      */
     if (lhs && lhs->isFlags()) {
-        if (!rhs || !rhs->isFlagCall()) {
+        if (!rhs) {
+            return false;
+        }
+        else if (rhs->isIntConst() && *lhs != *rhs) {
+            // e.g. %flags := 0
+            searchAndReplace(*e, rhs, true);
+            return true;
+        }
+        else if (!rhs->isFlagCall()) {
             return false;
         }
 
@@ -447,15 +429,14 @@ bool Statement::replaceRef(SharedExp e, Assignment *def)
         }
     }
 
-    // do the replacement
-    // bool convert = doReplaceRef(re, rhs);
-    return searchAndReplace(*e, rhs, true); // Last parameter true to change collectors
+    // do the replacement; last parameter true to also change collectors
+    return searchAndReplace(*e, rhs, true);
 }
 
 
 bool Statement::isNullStatement() const
 {
-    if (m_kind != StmtType::Assign) {
+    if (!this->isAssign()) {
         return false;
     }
 
@@ -463,11 +444,11 @@ bool Statement::isNullStatement() const
 
     if (right->isSubscript()) {
         // Must refer to self to be null
-        return this == right->access<RefExp>()->getDef();
+        return right->access<RefExp>()->getDef().get() == this;
     }
     else {
         // Null if left == right
-        return *static_cast<const Assign *>(this)->getLeft() == *right;
+        return *shared_from_this()->as<const Assign>()->getLeft() == *right;
     }
 }
 
@@ -475,7 +456,7 @@ bool Statement::isNullStatement() const
 void Statement::bypass()
 {
     // Use the Part modifier so we don't change the top level of LHS of assigns etc
-    CallBypasser cb(this);
+    CallBypasser cb(shared_from_this());
     StmtPartModifier sm(&cb);
 
     accept(&sm);

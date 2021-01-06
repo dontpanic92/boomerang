@@ -30,7 +30,7 @@ Log::Log(LogLevel level)
     , m_level(level)
 {
     const char *lastSrc = __FILE__;
-    const char *p       = lastSrc;
+    const char *p;
 
     while ((p = strstr(lastSrc + 1, "src")) != nullptr) {
         m_fileNameOffset += (p - lastSrc);
@@ -68,7 +68,9 @@ void Log::log(LogLevel level, const char *file, int line, const QString &msg)
     const QStringList msgLines = msg.split('\n');
 
     for (const QString &msgLine : msgLines) {
-        logDirect(level, file, line, msgLine);
+        if (canLog(level)) {
+            logDirect(level, file, line, msgLine);
+        }
     }
 
     flush();
@@ -77,16 +79,16 @@ void Log::log(LogLevel level, const char *file, int line, const QString &msg)
 
 void Log::logDirect(LogLevel level, const char *file, int line, const QString &msg)
 {
-    if (!canLog(level)) {
-        return;
-    }
-
     char prettyFile[40]; // truncated file name
     truncateFileName(prettyFile, 40, file);
+    QString prettyFilePath(prettyFile);
 
-    QString header  = "%1 | %2 | %3 | %4\n";
-    QString logLine = header.arg(levelToString(level)).arg(prettyFile).arg(line, 4).arg(msg);
-    this->write(logLine);
+#ifdef _WIN32
+    prettyFilePath = prettyFilePath.replace("\\", "/");
+#endif
+
+    const QString pattern = "%1 | %2 | %3 | %4\n";
+    this->write(pattern.arg(levelToString(level)).arg(prettyFilePath).arg(line, 4).arg(msg));
 
     if (level == LogLevel::Fatal) {
         abort();
@@ -144,11 +146,13 @@ bool Log::canLog(LogLevel level) const
 
 void Log::writeLogHeader()
 {
-    this->write("Level | File                                    | Line | Message\n");
-    this->write(QString(100, '=') + "\n");
+    write("Level | File                                    | Line | Message\n");
+    write(QString(100, '=') + "\n");
 
-    LOG_MSG("This is Boomerang " BOOMERANG_VERSION);
-    LOG_MSG("Log initialized.");
+    logDirect(LogLevel::Message, __FILE__, __LINE__, "This is Boomerang " BOOMERANG_VERSION);
+    logDirect(LogLevel::Message, __FILE__, __LINE__, "Log initialized.");
+    logDirect(LogLevel::Message, __FILE__, __LINE__,
+              "Log level is '" + levelToString(getLogLevel()).trimmed() + "'.");
 }
 
 
@@ -170,7 +174,8 @@ void Log::truncateFileName(char *dstBuffer, size_t dstCharacters, const char *fi
 }
 
 
-QString Log::collectArg(const QString &msg, const Statement *s)
+template<>
+QString Log::collectArg<Statement>(const QString &msg, const std::shared_ptr<Statement> &s)
 {
     return msg.arg(s->toString());
 }

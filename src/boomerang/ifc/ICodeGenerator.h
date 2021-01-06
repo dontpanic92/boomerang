@@ -28,10 +28,10 @@ class QString;
 /// Base class for generating high-level code from SSL statements.
 /// Concrete implementations of this class provide specific language
 /// bindings.
-class ICodeGenerator
+class BOOMERANG_API ICodeGenerator
 {
 public:
-    ICodeGenerator(Project *) {}
+    ICodeGenerator(Project *) { }
     virtual ~ICodeGenerator() = default;
 
 public:

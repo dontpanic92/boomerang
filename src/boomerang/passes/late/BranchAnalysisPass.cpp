@@ -11,6 +11,7 @@
 
 #include "boomerang/db/proc/UserProc.h"
 #include "boomerang/passes/PassManager.h"
+#include "boomerang/ssl/RTL.h"
 #include "boomerang/ssl/exp/Binary.h"
 #include "boomerang/ssl/exp/Const.h"
 #include "boomerang/ssl/statements/BranchStatement.h"
@@ -25,142 +26,132 @@ BranchAnalysisPass::BranchAnalysisPass()
 
 bool BranchAnalysisPass::execute(UserProc *proc)
 {
-    bool removedBBs = doBranchAnalysis(proc);
+    bool removedFragments = doBranchAnalysis(proc);
     fixUglyBranches(proc);
 
-    if (removedBBs) {
+    if (removedFragments) {
         // redo the data flow
         PassManager::get()->executePass(PassID::Dominators, proc);
-
-        // recalculate phi assignments of referencing BBs.
-        for (BasicBlock *bb : *proc->getCFG()) {
-            BasicBlock::RTLIterator rtlIt;
-            StatementList::iterator stmtIt;
-
-            for (Statement *stmt = bb->getFirstStmt(rtlIt, stmtIt); stmt;
-                 stmt            = bb->getNextStmt(rtlIt, stmtIt)) {
-                if (!stmt->isPhi()) {
-                    continue;
-                }
-
-                PhiAssign *phiStmt       = static_cast<PhiAssign *>(stmt);
-                PhiAssign::PhiDefs &defs = phiStmt->getDefs();
-
-                for (PhiAssign::PhiDefs::iterator defIt = defs.begin(); defIt != defs.end();) {
-                    if (!proc->getCFG()->hasBB(defIt->first)) {
-                        // remove phi reference to deleted bb
-                        defIt = defs.erase(defIt);
-                    }
-                    else {
-                        ++defIt;
-                    }
-                }
-            }
-        }
+        PassManager::get()->executePass(PassID::PhiPlacement, proc);
+        PassManager::get()->executePass(PassID::BlockVarRename, proc);
     }
 
-    return removedBBs;
+    return removedFragments;
 }
 
 
 bool BranchAnalysisPass::doBranchAnalysis(UserProc *proc)
 {
-    StatementList stmts;
-    proc->getStatements(stmts);
+    std::set<IRFragment *, Util::ptrCompare<IRFragment>> fragsToRemove;
 
-    std::set<BasicBlock *> bbsToRemove;
-
-    for (Statement *stmt : stmts) {
-        if (!stmt->isBranch()) {
+    for (IRFragment *a : *proc->getCFG()) {
+        if (!a->isType(FragType::Twoway)) {
+            continue;
+        }
+        else if (fragsToRemove.find(a) != fragsToRemove.end()) {
             continue;
         }
 
-        BranchStatement *firstBranch = static_cast<BranchStatement *>(stmt);
+        if (a->isEmpty() || isOnlyBranch(a)) {
+            if (a->getSuccessor(BTHEN) == a) {
+                for (IRFragment *pred : a->getPredecessors()) {
+                    proc->getCFG()->replaceEdge(pred, a, a->getSuccessor(BELSE));
+                }
+                fragsToRemove.insert(a);
+                continue;
+            }
+            else if (a->getSuccessor(BELSE) == a) {
+                for (IRFragment *pred : a->getPredecessors()) {
+                    proc->getCFG()->replaceEdge(pred, a, a->getSuccessor(BTHEN));
+                }
+                fragsToRemove.insert(a);
+                continue;
+            }
+        }
 
-        if (!firstBranch->getFallBB() || !firstBranch->getTakenBB()) {
+        IRFragment *b = a->getSuccessor(BELSE);
+        if (!b || !b->isType(FragType::Twoway)) {
+            continue;
+        }
+        else if (!isOnlyBranch(b)) {
             continue;
         }
 
-        StatementList fallstmts;
-        firstBranch->getFallBB()->appendStatementsTo(fallstmts);
-        Statement *nextAfterBranch = !fallstmts.empty() ? fallstmts.front() : nullptr;
+        assert(a->getLastStmt()->isBranch());
+        assert(b->getLastStmt()->isBranch());
 
-        if (nextAfterBranch && nextAfterBranch->isBranch()) {
-            BranchStatement *secondBranch = static_cast<BranchStatement *>(nextAfterBranch);
+        std::shared_ptr<BranchStatement> aBranch = a->getLastStmt()->as<BranchStatement>();
+        std::shared_ptr<BranchStatement> bBranch = b->getLastStmt()->as<BranchStatement>();
 
-            //   branch to A if cond1
-            //   branch to B if cond2
-            // A: something
-            // B:
-            // ->
-            //   branch to B if !cond1 && cond2
-            // A: something
-            // B:
-            //
-            if ((secondBranch->getFallBB() == firstBranch->getTakenBB()) &&
-                (secondBranch->getBB()->getNumPredecessors() == 1)) {
-                SharedExp cond = Binary::get(opAnd, Unary::get(opLNot, firstBranch->getCondExpr()),
-                                             secondBranch->getCondExpr());
-                firstBranch->setCondExpr(cond->clone()->simplify());
+        // A: branch to D if cond1
+        // B: branch to D if cond2
+        // C: something
+        // D:
+        // ->
+        // A  branch to D if cond1 || cond2
+        // C: something
+        // D:
+        if (b->getSuccessor(BTHEN) == a->getSuccessor(BTHEN) && b->getNumPredecessors() == 1) {
+            const SharedExp newCond = Binary::get(opOr, aBranch->getCondExpr(),
+                                                  bBranch->getCondExpr());
 
-                firstBranch->setDest(secondBranch->getFixedDest());
-                firstBranch->setTakenBB(secondBranch->getTakenBB());
-                firstBranch->setFallBB(secondBranch->getFallBB());
+            aBranch->setCondExpr(newCond->clone()->simplify());
+            aBranch->setFallFragment(bBranch->getFallFragment());
 
-                // remove second branch BB
-                BasicBlock *secondBranchBB = secondBranch->getBB();
+            assert(b->getNumPredecessors() == 0);
+            assert(b->getNumSuccessors() == 2);
 
-                assert(secondBranchBB->getNumPredecessors() == 0);
-                assert(secondBranchBB->getNumSuccessors() == 2);
-                BasicBlock *succ1 = secondBranch->getBB()->getSuccessor(BTHEN);
-                BasicBlock *succ2 = secondBranch->getBB()->getSuccessor(BELSE);
+            IRFragment *succ1 = b->getSuccessor(BTHEN);
+            IRFragment *succ2 = b->getSuccessor(BELSE);
 
-                secondBranchBB->removeSuccessor(succ1);
-                secondBranchBB->removeSuccessor(succ2);
-                succ1->removePredecessor(secondBranchBB);
-                succ2->removePredecessor(secondBranchBB);
+            b->removeSuccessor(succ1);
+            b->removeSuccessor(succ2);
 
-                bbsToRemove.insert(secondBranchBB);
-            }
+            succ1->removePredecessor(b);
+            succ2->removePredecessor(b);
 
-            //   branch to B if cond1
-            //   branch to B if cond2
-            // A: something
-            // B:
-            // ->
-            //   branch to B if cond1 || cond2
-            // A: something
-            // B:
-            if ((secondBranch->getTakenBB() == firstBranch->getTakenBB()) &&
-                (secondBranch->getBB()->getNumPredecessors() == 1)) {
-                const SharedExp cond = Binary::get(opOr, firstBranch->getCondExpr(),
-                                                   secondBranch->getCondExpr());
+            fragsToRemove.insert(b);
+        }
 
-                firstBranch->setCondExpr(cond->clone()->simplify());
-                firstBranch->setFallBB(secondBranch->getFallBB());
+        // A: branch to C if cond1
+        // B: branch to D if cond2
+        // C: something
+        // D:
+        // ->
+        // A: branch to D if !cond1 && cond2
+        // C: something
+        // D:
+        else if (a->getSuccessor(BTHEN) == b->getSuccessor(BELSE) && b->getNumPredecessors() == 1) {
+            const SharedExp newCond = Binary::get(opAnd, Unary::get(opLNot, aBranch->getCondExpr()),
+                                                  bBranch->getCondExpr());
 
-                BasicBlock *secondBranchBB = secondBranch->getBB();
-                assert(secondBranchBB->getNumPredecessors() == 0);
-                assert(secondBranchBB->getNumSuccessors() == 2);
-                BasicBlock *succ1 = secondBranchBB->getSuccessor(BTHEN);
-                BasicBlock *succ2 = secondBranchBB->getSuccessor(BELSE);
+            aBranch->setCondExpr(newCond->clone()->simplify());
+            aBranch->setDest(bBranch->getFixedDest());
+            aBranch->setTakenFragment(bBranch->getTakenFragment());
+            aBranch->setFallFragment(bBranch->getFallFragment());
 
-                secondBranchBB->removeSuccessor(succ1);
-                secondBranchBB->removeSuccessor(succ2);
-                succ1->removePredecessor(secondBranchBB);
-                succ2->removePredecessor(secondBranchBB);
+            assert(b->getNumPredecessors() == 0);
+            assert(b->getNumSuccessors() == 2);
 
-                bbsToRemove.insert(secondBranchBB);
-            }
+            IRFragment *succ1 = b->getSuccessor(BTHEN);
+            IRFragment *succ2 = b->getSuccessor(BELSE);
+
+            b->removeSuccessor(succ1);
+            b->removeSuccessor(succ2);
+
+            succ1->removePredecessor(b);
+            succ2->removePredecessor(b);
+
+            fragsToRemove.insert(b);
         }
     }
 
-    const bool removedBBs = !bbsToRemove.empty();
-    for (BasicBlock *bb : bbsToRemove) {
-        proc->getCFG()->removeBB(bb);
+    const bool removedFragments = !fragsToRemove.empty();
+    for (IRFragment *bb : fragsToRemove) {
+        proc->getCFG()->removeFragment(bb);
     }
 
-    return removedBBs;
+    return removedFragments;
 }
 
 
@@ -174,7 +165,7 @@ void BranchAnalysisPass::fixUglyBranches(UserProc *proc)
             continue;
         }
 
-        SharedExp hl = static_cast<BranchStatement *>(stmt)->getCondExpr();
+        SharedExp hl = stmt->as<BranchStatement>()->getCondExpr();
 
         // of the form: x{n} - 1 >= 0
         if (hl && (hl->getOper() == opGtrEq) && hl->getSubExp2()->isIntConst() &&
@@ -182,17 +173,17 @@ void BranchAnalysisPass::fixUglyBranches(UserProc *proc)
             hl->getSubExp1()->getSubExp2()->isIntConst() &&
             (hl->access<Const, 1, 2>()->getInt() == 1) &&
             hl->getSubExp1()->getSubExp1()->isSubscript()) {
-            Statement *n = hl->access<RefExp, 1, 1>()->getDef();
+            SharedStmt n = hl->access<RefExp, 1, 1>()->getDef();
 
             if (n && n->isPhi()) {
-                PhiAssign *p = static_cast<PhiAssign *>(n);
+                std::shared_ptr<PhiAssign> p = n->as<PhiAssign>();
 
                 for (const auto &phi : *p) {
-                    if (!phi.getDef()->isAssign()) {
+                    if (!phi->getDef()->isAssign()) {
                         continue;
                     }
 
-                    Assign *a = static_cast<Assign *>(phi.getDef());
+                    std::shared_ptr<Assign> a = phi->getDef()->as<Assign>();
 
                     if (*a->getRight() == *hl->getSubExp1()) {
                         hl->setSubExp1(RefExp::get(a->getLeft(), a));
@@ -202,4 +193,32 @@ void BranchAnalysisPass::fixUglyBranches(UserProc *proc)
             }
         }
     }
+}
+
+
+bool BranchAnalysisPass::isOnlyBranch(IRFragment *frag) const
+{
+    const RTLList *rtls = frag->getRTLs();
+    if (!rtls || rtls->empty()) {
+        return false;
+    }
+
+    StatementList::reverse_iterator sIt;
+    IRFragment::RTLRIterator rIt;
+    bool last = true;
+
+    for (SharedStmt s = frag->getLastStmt(rIt, sIt); s != nullptr;
+         s            = frag->getPrevStmt(rIt, sIt)) {
+        if (!last) {
+            return false; // there are other statements beside the last branch
+        }
+        else if (!s->isBranch()) {
+            return false; // last stmt is not a branch, can't handle this
+        }
+        else {
+            last = false;
+        }
+    }
+
+    return true;
 }

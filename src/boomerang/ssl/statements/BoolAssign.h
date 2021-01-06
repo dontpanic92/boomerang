@@ -21,31 +21,30 @@
 class BOOMERANG_API BoolAssign : public Assignment
 {
 public:
-    /// \param size the size of the assignment
-    BoolAssign(int size);
-    BoolAssign(const BoolAssign &other) = default;
-    BoolAssign(BoolAssign &&other)      = default;
+    BoolAssign(SharedExp lhs, BranchType bt, SharedExp cond);
+    BoolAssign(const BoolAssign &other);
+    BoolAssign(BoolAssign &&other) = default;
 
-    virtual ~BoolAssign() override;
+    ~BoolAssign() override;
 
-    BoolAssign &operator=(const BoolAssign &other) = default;
+    BoolAssign &operator=(const BoolAssign &other);
     BoolAssign &operator=(BoolAssign &&other) = default;
 
 public:
     /// \copydoc Statement::clone
-    virtual Statement *clone() const override;
+    SharedStmt clone() const override;
 
     /// \copydoc Statement::accept
-    virtual bool accept(StmtVisitor *visitor) const override;
+    bool accept(StmtVisitor *visitor) const override;
 
     /// \copydoc Statement::accept
-    virtual bool accept(StmtExpVisitor *visitor) override;
+    bool accept(StmtExpVisitor *visitor) override;
 
     /// \copydoc Statement::accept
-    virtual bool accept(StmtModifier *modifier) override;
+    bool accept(StmtModifier *modifier) override;
 
     /// \copydoc Statement::accept
-    virtual bool accept(StmtPartModifier *modifier) override;
+    bool accept(StmtPartModifier *modifier) override;
 
     /**
      * Sets the BranchType of this jcond as well as the flag
@@ -71,44 +70,29 @@ public:
      */
     void setCondExpr(SharedExp pss);
 
-    // As above, no delete (for subscripting)
-    void setCondExprND(SharedExp e) { m_cond = e; }
-    int getSize() const { return m_size; } // Return the size of the assignment
-
-    /**
-     * Change this from an unsigned to a signed branch.
-     * \note Not sure if this is ever going to be used
-     */
-    void makeSigned();
-
     /// \copydoc Assignment::printCompact
-    virtual void printCompact(OStream &os) const override;
+    void printCompact(OStream &os) const override;
 
     /// \copydoc Statement::simplify
-    virtual void simplify() override;
+    void simplify() override;
 
     /// \copydoc Statement::getDefinitions
-    virtual void getDefinitions(LocationSet &def, bool assumeABICompliance) const override;
+    void getDefinitions(LocationSet &def, bool assumeABICompliance) const override;
 
     /// \copydoc Assignment::getRight
-    virtual SharedExp getRight() const override { return getCondExpr(); }
+    SharedExp getRight() const override;
 
     /// \copydoc Statement::search
-    virtual bool search(const Exp &search, SharedExp &result) const override;
+    bool search(const Exp &search, SharedExp &result) const override;
 
     /// \copydoc Statement::searchAll
-    virtual bool searchAll(const Exp &search, std::list<SharedExp> &result) const override;
+    bool searchAll(const Exp &search, std::list<SharedExp> &result) const override;
 
     /// \copydoc Statement::searchAndReplace
-    virtual bool searchAndReplace(const Exp &search, SharedExp replace, bool cc = false) override;
-
-    /// a hack for the SETS macro
-    /// This is for setting up SETcc instructions; see include/decoder.h macro SETS
-    void setLeftFromList(const std::list<Statement *> &stmts);
+    bool searchAndReplace(const Exp &search, SharedExp replace, bool cc = false) override;
 
 private:
     BranchType m_jumpType = BranchType::INVALID; ///< the condition for setting true
     SharedExp m_cond; ///< Exp representation of the high level condition: e.g. r[8] == 5
     bool m_isFloat;   ///< True if condition uses floating point CC
-    int m_size;       ///< The size of the dest
 };

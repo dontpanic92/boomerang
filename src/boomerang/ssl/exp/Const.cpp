@@ -129,65 +129,93 @@ bool Const::equalNoSubscript(const Exp &o) const
 int Const::getInt() const
 {
     if (std::get_if<int>(&m_value) != nullptr) {
-        return std::get<int>(m_value);
+        return *std::get_if<int>(&m_value);
     }
     else if (std::get_if<QWord>(&m_value) != nullptr) {
-        return (int)std::get<QWord>(m_value);
+        return (int)*std::get_if<QWord>(&m_value);
     }
-    else {
-        return (int)std::get<double>(m_value);
+    else if (std::get_if<double>(&m_value) != nullptr) {
+        return (int)*std::get_if<double>(&m_value);
     }
+
+    LOG_FATAL("Bad variant access (currently held index %1)", m_value.index());
+    return 0;
 }
 
 
 QWord Const::getLong() const
 {
-    return std::get<QWord>(m_value);
+    if (std::get_if<QWord>(&m_value) != nullptr) {
+        return *std::get_if<QWord>(&m_value);
+    }
+
+    LOG_FATAL("Bad variant access (currently held index %1)", m_value.index());
+    return 0;
 }
 
 
 double Const::getFlt() const
 {
-    return std::get<double>(m_value);
+    if (std::get_if<double>(&m_value) != nullptr) {
+        return *std::get_if<double>(&m_value);
+    }
+
+    LOG_FATAL("Bad variant access (currently held index %1)", m_value.index());
+    return 0.0;
 }
 
 
 QString Const::getStr() const
 {
     if (std::get_if<QString>(&m_value) != nullptr) {
-        return std::get<QString>(m_value);
+        return *std::get_if<QString>(&m_value);
     }
-    else {
-        return std::get<const char *>(m_value);
+    else if (std::get_if<const char *>(&m_value) != nullptr) {
+        return *std::get_if<const char *>(&m_value);
     }
+
+    LOG_FATAL("Bad variant access (currently held index %1)", m_value.index());
+    return "";
 }
 
 
 const char *Const::getRawStr() const
 {
     if (std::get_if<const char *>(&m_value) != nullptr) {
-        return std::get<const char *>(m_value);
+        return *std::get_if<const char *>(&m_value);
     }
-    else {
-        return qPrintable(std::get<QString>(m_value));
+    else if (std::get_if<QString>(&m_value) != nullptr) {
+        return qPrintable(*std::get_if<QString>(&m_value));
     }
+
+    LOG_FATAL("Bad variant access (currently held index %1)", m_value.index());
+    return nullptr;
 }
 
 
 Address Const::getAddr() const
 {
     if (std::get_if<QWord>(&m_value) != nullptr) {
-        return Address(static_cast<Address::value_type>(std::get<QWord>(m_value)));
+        return Address(static_cast<Address::value_type>(*std::get_if<QWord>(&m_value)));
     }
-    else {
-        return Address(static_cast<Address::value_type>(std::get<int>(m_value)));
+    else if (std::get_if<int>(&m_value) != nullptr) {
+        return Address(static_cast<Address::value_type>(*std::get_if<int>(&m_value)));
     }
+
+    LOG_FATAL("Bad variant access (currently held index %1)", m_value.index());
+    return Address::INVALID;
 }
 
 
 QString Const::getFuncName() const
 {
-    return std::get<Function *>(m_value)->getName();
+    if (std::get_if<Function *>(&m_value) != nullptr) {
+        assert(*std::get_if<Function *>(&m_value) != nullptr);
+        return (*std::get_if<Function *>(&m_value))->getName();
+    }
+
+    LOG_FATAL("Bad variant access (currently held index %1)", m_value.index());
+    return "";
 }
 
 
@@ -271,6 +299,14 @@ bool Const::operator==(const Exp &other) const
     case opLongConst: return getLong() == otherConst.getLong();
     case opFltConst: return getFlt() == otherConst.getFlt();
     case opStrConst: return getStr() == otherConst.getStr();
+    case opFuncConst: {
+        const Function *const *myData    = std::get_if<Function *>(&m_value);
+        const Function *const *otherData = std::get_if<Function *>(&otherConst.m_value);
+        const Function *const myFunc     = myData ? *myData : nullptr;
+        const Function *const otherFunc  = otherData ? *otherData : nullptr;
+
+        return myFunc && otherFunc && myFunc == otherFunc;
+    }
     default: LOG_FATAL("Invalid operator %1", operToString(m_oper));
     }
 

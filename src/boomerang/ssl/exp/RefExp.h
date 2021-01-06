@@ -11,6 +11,7 @@
 
 
 #include "boomerang/ssl/exp/Unary.h"
+#include "boomerang/ssl/statements/Statement.h"
 
 
 /**
@@ -33,11 +34,11 @@ class BOOMERANG_API RefExp : public Unary
 public:
     /// \param usedExp Expression that is used
     /// \param definition Statment where the expression is defined. May be nullptr.
-    RefExp(SharedExp usedExp, Statement *definition);
+    RefExp(SharedExp usedExp, const SharedStmt &definition);
     RefExp(const RefExp &other) = default;
     RefExp(RefExp &&other)      = default;
 
-    virtual ~RefExp() override { m_def = nullptr; }
+    ~RefExp() override { m_def = nullptr; }
 
     RefExp &operator=(const RefExp &other) = default;
     RefExp &operator=(RefExp &&other) = default;
@@ -47,7 +48,7 @@ public:
     SharedExp clone() const override;
 
     /// \copydoc Unary::get
-    static std::shared_ptr<RefExp> get(SharedExp usedExp, Statement *definition);
+    static std::shared_ptr<RefExp> get(SharedExp usedExp, const SharedStmt &definition);
 
     /// \copydoc Unary::operator==
     bool operator==(const Exp &o) const override;
@@ -58,32 +59,32 @@ public:
     /// \copydoc Unary::equalNoSubscript
     bool equalNoSubscript(const Exp &o) const override;
 
-    Statement *getDef() const { return m_def; }
-    void setDef(Statement *def);
+    const SharedStmt &getDef() const { return m_def; }
+    void setDef(const SharedStmt &def);
 
-    SharedExp addSubscript(Statement *def);
+    SharedExp addSubscript(const SharedStmt &def);
 
     /// Before type analysis, implicit definitions are nullptr.
     /// During and after TA, they point to an implicit assignment statement.
     bool isImplicitDef() const;
 
     /// \copydoc Unary::ascendType
-    virtual SharedType ascendType() override;
+    SharedType ascendType() override;
 
     /// \copydoc Unary::descendType
-    virtual bool descendType(SharedType newType) override;
+    bool descendType(SharedType newType) override;
 
 public:
     /// \copydoc Unary::acceptVisitor
-    virtual bool acceptVisitor(ExpVisitor *v) override;
+    bool acceptVisitor(ExpVisitor *v) override;
 
 private:
     /// \copydoc Unary::acceptPreModifier
-    virtual SharedExp acceptPreModifier(ExpModifier *mod, bool &visitChildren) override;
+    SharedExp acceptPreModifier(ExpModifier *mod, bool &visitChildren) override;
 
     /// \copydoc Unary::acceptPostModifier
-    virtual SharedExp acceptPostModifier(ExpModifier *mod) override;
+    SharedExp acceptPostModifier(ExpModifier *mod) override;
 
 private:
-    Statement *m_def; ///< The defining statement
+    SharedStmt m_def; ///< The defining statement
 };

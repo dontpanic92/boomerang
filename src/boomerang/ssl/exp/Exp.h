@@ -12,6 +12,7 @@
 
 #include "boomerang/ssl/exp/ExpHelp.h"
 #include "boomerang/ssl/exp/Operator.h"
+#include "boomerang/ssl/statements/Statement.h"
 #include "boomerang/util/OStream.h"
 
 #include <QString>
@@ -29,7 +30,6 @@ class ExpVisitor;
 class ExpModifier;
 class UserProc;
 class LocationSet;
-class Statement;
 class CompoundType;
 
 class OStream;
@@ -53,9 +53,9 @@ typedef std::shared_ptr<const Type> SharedConstType;
  *                      Exp (abstract)
  *                    ____/  |     \
  *                   /       |      \
- *                Unary     Const   Terminal
- *   TypedExp____/  |   \
- *    RefExp____/ Binary Location
+ *                _Unary    Const   Terminal
+ *      TypedExp_/  |   \
+ *       RefExp_/ Binary Location
  *                  |
  *               Ternary
  */
@@ -77,7 +77,7 @@ public:
 
     /// Type sensitive equality
     virtual bool operator==(const Exp &o) const = 0;
-    bool operator!=(const Exp &o) { return !(*this == o); }
+    bool operator!=(const Exp &o) const { return !(*this == o); }
 
     /// Type sensitive less than
     virtual bool operator<(const Exp &o) const = 0;
@@ -446,11 +446,11 @@ public:
     /// Needs the UserProc for the symbol map
     // FIXME: if the wrapped expression does not convert to a location, the result is subscripted,
     // which is probably not what is wanted!
-    SharedExp fromSSAleft(UserProc *proc, Statement *d);
+    SharedExp fromSSAleft(UserProc *proc, const SharedStmt &d);
 
     /// Subscript all e in this Exp with statement def
     /// Subscript any occurrences of e with e{def} in this expression
-    SharedExp expSubscriptVar(const SharedExp &e, Statement *def);
+    SharedExp expSubscriptVar(const SharedExp &e, const SharedStmt &def);
 
     /// Subscript all e in this Exp with 0 (implicit assignments)
     /// Subscript any occurrences of e with e{-} in this expression
@@ -469,10 +469,10 @@ public:
 
     /// Check if this expression contains a bare memof (no subscripts) or one that has no symbol
     /// (i.e. is not a local variable or a parameter)
-    bool containsBadMemof(); ///< Check if this Exp contains a bare (non subscripted) memof
+    bool containsBadMemof();
 
-    // Data flow based type analysis (implemented in type/dfa.cpp)
-    // Pull type information up the expression tree
+    /// Data flow based type analysis (implemented in type/dfa.cpp)
+    /// Pull type information up the expression tree
     virtual SharedType ascendType();
 
     /// Push type information down the expression tree.
@@ -530,96 +530,51 @@ BOOMERANG_API OStream &operator<<(OStream &os, const SharedConstExp &exp);
 
 // Hard-coded numbers of register indices.
 
-// Pentium (x86)
-#define REG_PENT_AX RegNum(0)
-#define REG_PENT_CX RegNum(1)
-#define REG_PENT_DX RegNum(2)
-#define REG_PENT_BX RegNum(3)
-#define REG_PENT_SP RegNum(4)
-#define REG_PENT_BP RegNum(5)
-#define REG_PENT_SI RegNum(6)
-#define REG_PENT_DI RegNum(7)
-#define REG_PENT_AL RegNum(8)
-#define REG_PENT_CL RegNum(9)
-#define REG_PENT_DL RegNum(10)
-#define REG_PENT_BL RegNum(11)
-#define REG_PENT_AH RegNum(12)
-#define REG_PENT_CH RegNum(13)
-#define REG_PENT_DH RegNum(14)
-#define REG_PENT_BH RegNum(15)
+// x86
+#define REG_X86_AX RegNum(0)
+#define REG_X86_CX RegNum(1)
+#define REG_X86_DX RegNum(2)
+#define REG_X86_BX RegNum(3)
+#define REG_X86_SP RegNum(4)
+#define REG_X86_BP RegNum(5)
+#define REG_X86_SI RegNum(6)
+#define REG_X86_DI RegNum(7)
+#define REG_X86_AL RegNum(8)
+#define REG_X86_CL RegNum(9)
+#define REG_X86_DL RegNum(10)
+#define REG_X86_BL RegNum(11)
+#define REG_X86_AH RegNum(12)
+#define REG_X86_CH RegNum(13)
+#define REG_X86_DH RegNum(14)
+#define REG_X86_BH RegNum(15)
 
-#define REG_PENT_SS RegNum(16)
-#define REG_PENT_CS RegNum(17)
-#define REG_PENT_DS RegNum(18)
-#define REG_PENT_ES RegNum(19)
-#define REG_PENT_FS RegNum(20)
-#define REG_PENT_GS RegNum(21)
+#define REG_X86_SS RegNum(16)
+#define REG_X86_CS RegNum(17)
+#define REG_X86_DS RegNum(18)
+#define REG_X86_ES RegNum(19)
+#define REG_X86_FS RegNum(20)
+#define REG_X86_GS RegNum(21)
 
-#define REG_PENT_EAX RegNum(24)
-#define REG_PENT_ECX RegNum(25)
-#define REG_PENT_EDX RegNum(26)
-#define REG_PENT_EBX RegNum(27)
-#define REG_PENT_ESP RegNum(28)
-#define REG_PENT_EBP RegNum(29)
-#define REG_PENT_ESI RegNum(30)
-#define REG_PENT_EDI RegNum(31)
+#define REG_X86_EAX RegNum(24)
+#define REG_X86_ECX RegNum(25)
+#define REG_X86_EDX RegNum(26)
+#define REG_X86_EBX RegNum(27)
+#define REG_X86_ESP RegNum(28)
+#define REG_X86_EBP RegNum(29)
+#define REG_X86_ESI RegNum(30)
+#define REG_X86_EDI RegNum(31)
 
-#define REG_PENT_ST0 RegNum(32) // FP st register
-#define REG_PENT_ST1 RegNum(33)
-#define REG_PENT_ST2 RegNum(34)
-#define REG_PENT_ST3 RegNum(35)
-#define REG_PENT_ST4 RegNum(36)
-#define REG_PENT_ST5 RegNum(37)
-#define REG_PENT_ST6 RegNum(38)
-#define REG_PENT_ST7 RegNum(39)
-#define REG_PENT_FSW RegNum(40)
-#define REG_PENT_FSTP RegNum(41)
-#define REG_PENT_FCW RegNum(42)
-
-
-// SPARC
-#define REG_SPARC_G0 RegNum(0)
-#define REG_SPARC_G1 RegNum(1)
-#define REG_SPARC_G2 RegNum(2)
-#define REG_SPARC_G3 RegNum(3)
-#define REG_SPARC_G4 RegNum(4)
-#define REG_SPARC_G5 RegNum(5)
-#define REG_SPARC_G6 RegNum(6)
-#define REG_SPARC_G7 RegNum(7)
-#define REG_SPARC_O0 RegNum(8)
-#define REG_SPARC_O1 RegNum(9)
-#define REG_SPARC_O2 RegNum(10)
-#define REG_SPARC_O3 RegNum(11)
-#define REG_SPARC_O4 RegNum(12)
-#define REG_SPARC_O5 RegNum(13)
-#define REG_SPARC_O6 RegNum(14)
-#define REG_SPARC_O7 RegNum(15)
-#define REG_SPARC_L0 RegNum(16)
-#define REG_SPARC_L1 RegNum(17)
-#define REG_SPARC_L2 RegNum(18)
-#define REG_SPARC_L3 RegNum(19)
-#define REG_SPARC_L4 RegNum(20)
-#define REG_SPARC_L5 RegNum(21)
-#define REG_SPARC_L6 RegNum(22)
-#define REG_SPARC_L7 RegNum(23)
-#define REG_SPARC_I0 RegNum(24)
-#define REG_SPARC_I1 RegNum(25)
-#define REG_SPARC_I2 RegNum(26)
-#define REG_SPARC_I3 RegNum(27)
-#define REG_SPARC_I4 RegNum(28)
-#define REG_SPARC_I5 RegNum(29)
-#define REG_SPARC_I6 RegNum(30)
-#define REG_SPARC_I7 RegNum(31)
-
-
-#define REG_SPARC_SP RegNum(14) // stack pointer
-#define REG_SPARC_FP RegNum(30) // frame pointer
-
-#define REG_SPARC_F0 RegNum(32)
-#define REG_SPARC_F31 RegNum(63)
-#define REG_SPARC_F0TO1 RegNum(64)
-#define REG_SPARC_F28TO31 RegNum(87)
-
+#define REG_X86_ST0 RegNum(32) // FP st register
+#define REG_X86_ST1 RegNum(33)
+#define REG_X86_ST2 RegNum(34)
+#define REG_X86_ST3 RegNum(35)
+#define REG_X86_ST4 RegNum(36)
+#define REG_X86_ST5 RegNum(37)
+#define REG_X86_ST6 RegNum(38)
+#define REG_X86_ST7 RegNum(39)
+#define REG_X86_FSW RegNum(40)
+#define REG_X86_FSTP RegNum(41)
+#define REG_X86_FCW RegNum(42)
 
 // PPC
 #define REG_PPC_SP RegNum(1)
@@ -639,7 +594,15 @@ BOOMERANG_API OStream &operator<<(OStream &os, const SharedConstExp &exp);
 #define REG_PPC_G12 RegNum(12)
 #define REG_PPC_G13 RegNum(13)
 #define REG_PPC_G31 RegNum(31)
-#define REG_PPC_CR0 RegNum(64) // Control register
+
+#define REG_PPC_F0 RegNum(32)
+
+#define REG_PPC_VR0 RegNum(64)
+
+#define REG_PPC_CR0 RegNum(100) // Control register
+
+#define REG_PPC_LR RegNum(300)  // Link register
+#define REG_PPC_CTR RegNum(301) // Counter register
 
 
 // ST20

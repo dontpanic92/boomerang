@@ -15,10 +15,10 @@ include_directories(
 BOOMERANG_ADD_DECODER(
     NAME "CapstoneX86"
     SOURCES
+        CapstoneDecoder.cpp
+        CapstoneDecoder.h
         csx86/CapstoneX86Decoder.cpp
         csx86/CapstoneX86Decoder.h
-        csx86/CapstoneDecoder.cpp
-        csx86/CapstoneDecoder.h
     LIBRARIES
         Capstone::Capstone
 )
@@ -35,19 +35,30 @@ if (MSVC AND BOOMERANG_BUILD_DECODER_CapstoneX86)
     install(FILES "${Capstone_DLL}" DESTINATION "bin/")
 endif ()
 
-BOOMERANG_ADD_DECODER(
-    NAME "PPC"
-    SOURCES
-        ppc/PPCDecoder.cpp
-        ppc/PPCDecoder.h
-)
 
 BOOMERANG_ADD_DECODER(
-    NAME "SPARC"
+    NAME "CapstonePPC"
     SOURCES
-        sparc/SPARCDecoder.cpp
-        sparc/SPARCDecoder.h
+        CapstoneDecoder.cpp
+        CapstoneDecoder.h
+        ppc/CapstonePPCDecoder.cpp
+        ppc/CapstonePPCDecoder.h
+    LIBRARIES
+        Capstone::Capstone
 )
+
+if (MSVC AND BOOMERANG_BUILD_DECODER_CapstonePPC)
+    add_custom_command(TARGET boomerang-CapstonePPCDecoder POST_BUILD
+        COMMAND "${CMAKE_COMMAND}"
+        ARGS
+            -E copy_if_different
+            "${Capstone_DLL}"
+            "${BOOMERANG_OUTPUT_DIR}/bin/"
+    )
+
+    install(FILES "${Capstone_DLL}" DESTINATION "bin/")
+endif ()
+
 
 BOOMERANG_ADD_DECODER(
     NAME "ST20"

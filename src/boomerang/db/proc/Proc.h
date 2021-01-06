@@ -32,6 +32,9 @@ class Signature;
 class BOOMERANG_API Function
 {
 public:
+    typedef std::set<std::shared_ptr<CallStatement>> CallerSet;
+
+public:
     /**
      * \param address   Address of entry point of procedure
      * \param signature The Signature for this Proc
@@ -73,14 +76,15 @@ public:
     void removeFromModule();
 
     std::shared_ptr<Signature> getSignature() const { return m_signature; }
-    void setSignature(std::shared_ptr<Signature> sig) { m_signature = sig; }
+    void setSignature(std::shared_ptr<Signature> sig);
 
     /// \returns the call statements that call this function.
-    const std::set<CallStatement *> &getCallers() const { return m_callers; }
-    std::set<CallStatement *> &getCallers() { return m_callers; }
+    const CallerSet &getCallers() const { return m_callers; }
+    CallerSet &getCallers() { return m_callers; }
 
     /// Add to the set of callers
-    void addCaller(CallStatement *caller) { m_callers.insert(caller); }
+    void addCaller(const std::shared_ptr<CallStatement> &caller) { m_callers.insert(caller); }
+    void removeCaller(const std::shared_ptr<CallStatement> &caller) { m_callers.erase(caller); }
 
     void removeParameterFromSignature(SharedExp e);
 
@@ -112,5 +116,5 @@ protected:
     std::shared_ptr<Signature> m_signature;
 
     /// Set of callers (CallStatements that call this procedure).
-    std::set<CallStatement *> m_callers;
+    CallerSet m_callers;
 };

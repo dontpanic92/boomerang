@@ -13,39 +13,50 @@
 #include "boomerang/ssl/statements/GotoStatement.h"
 
 
+// index of the "then" branch of conditional jumps
+#define BTHEN 0
+
+// index of the "else" branch of conditional jumps
+#define BELSE 1
+
+
 /**
  * BranchStatement has a condition Exp in addition to the destination of the jump.
  */
 class BOOMERANG_API BranchStatement : public GotoStatement
 {
 public:
-    BranchStatement();
+    BranchStatement(Address dest);
+    BranchStatement(SharedExp dest);
     BranchStatement(const BranchStatement &other) = default;
     BranchStatement(BranchStatement &&other)      = default;
 
-    virtual ~BranchStatement() override;
+    ~BranchStatement() override;
 
     BranchStatement &operator=(const BranchStatement &other) = default;
     BranchStatement &operator=(BranchStatement &&other) = default;
 
 public:
     /// \copydoc GotoStatement::clone
-    virtual Statement *clone() const override;
+    SharedStmt clone() const override;
 
     /// \copydoc GotoStatement::accept
-    virtual bool accept(StmtVisitor *visitor) const override;
+    bool accept(StmtVisitor *visitor) const override;
 
     /// \copydoc GotoStatement::accept
-    virtual bool accept(StmtExpVisitor *visitor) override;
+    bool accept(StmtExpVisitor *visitor) override;
 
     /// \copydoc GotoStatement::accept
-    virtual bool accept(StmtModifier *modifier) override;
+    bool accept(StmtModifier *modifier) override;
 
     /// \copydoc GotoStatement::accept
-    virtual bool accept(StmtPartModifier *modifier) override;
+    bool accept(StmtPartModifier *modifier) override;
 
     // Set and return the BRANCH_TYPE of this jcond as well as whether the
     // floating point condition codes are used.
+
+    BranchType getCondType() const { return m_jumpType; }
+    bool isFloatBranch() const { return m_isFloat; }
 
     /**
      * Sets the type of conditional jump.
@@ -62,34 +73,34 @@ public:
     /// \param pe Pointer to Exp to set
     void setCondExpr(SharedExp pe);
 
-    /// \returns the destination BB of a taken conditional jump
-    BasicBlock *getTakenBB() const;
+    /// \returns the destination fragment of a taken conditional jump
+    IRFragment *getTakenFragment() const;
 
-    /// \returns the destination BB of the fallthrough branch of a conditional jump
-    BasicBlock *getFallBB() const;
+    /// \returns the destination fragment of the fallthrough branch of a conditional jump
+    IRFragment *getFallFragment() const;
 
-    void setTakenBB(BasicBlock *bb);
-    void setFallBB(BasicBlock *bb);
+    void setTakenFragment(IRFragment *frag);
+    void setFallFragment(IRFragment *frag);
 
     /// \copydoc GotoStatement::print
-    virtual void print(OStream &os) const override;
+    void print(OStream &os) const override;
 
     /// \copydoc GotoStatement::search
-    virtual bool search(const Exp &search, SharedExp &result) const override;
+    bool search(const Exp &search, SharedExp &result) const override;
 
     /// \copydoc GotoStatement::searchAndReplace
-    virtual bool searchAndReplace(const Exp &search, SharedExp replace, bool cc = false) override;
+    bool searchAndReplace(const Exp &search, SharedExp replace, bool cc = false) override;
 
     /// \copydoc GotoStatement::searchAll
-    virtual bool searchAll(const Exp &search, std::list<SharedExp> &result) const override;
+    bool searchAll(const Exp &search, std::list<SharedExp> &result) const override;
 
     /// \copydoc GotoStatement::simplify
-    virtual void simplify() override;
+    void simplify() override;
 
 private:
     BranchType m_jumpType; ///< The condition for jumping
     SharedExp m_cond;      ///< The Exp representation of the high level condition: e.g., r[8] == 5
     bool m_isFloat;        ///< True if uses floating point CC
-    // jtCond seems to be mainly needed for the Pentium weirdness.
+    // jtCond seems to be mainly needed for the x86 weirdness.
     // Perhaps m_isFloat, m_jumpType, and m_size could one day be merged into a type
 };

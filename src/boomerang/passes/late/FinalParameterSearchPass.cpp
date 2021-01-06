@@ -28,7 +28,6 @@ FinalParameterSearchPass::FinalParameterSearchPass()
 
 bool FinalParameterSearchPass::execute(UserProc *proc)
 {
-    qDeleteAll(proc->getParameters());
     proc->getParameters().clear();
 
     if (proc->getSignature()->isForced()) {
@@ -49,7 +48,7 @@ bool FinalParameterSearchPass::execute(UserProc *proc)
             }
 
             proc->getParameters().append(
-                new ImplicitAssign(proc->getSignature()->getParamType(i), paramLoc));
+                std::make_shared<ImplicitAssign>(proc->getSignature()->getParamType(i), paramLoc));
             QString name         = proc->getSignature()->getParamName(i);
             SharedExp param      = Location::param(name, proc);
             SharedExp reParamLoc = RefExp::get(
@@ -61,32 +60,32 @@ bool FinalParameterSearchPass::execute(UserProc *proc)
     }
 
     if (DEBUG_PARAMS) {
-        LOG_VERBOSE("Finding final parameters for %1", getName());
+        LOG_VERBOSE("Finding final parameters for '%1'", proc->getName());
     }
 
     //    int sp = signature->getStackRegister();
     proc->getSignature()->setNumParams(0); // Clear any old ideas
-    StatementList stmts;
-    proc->getStatements(stmts);
 
-    for (Statement *s : stmts) {
-        // Assume that all parameters will be m[]{0} or r[]{0}, and in the implicit definitions at
-        // the start of the program
-        if (!s->isImplicit()) {
-            // Note: phis can get converted to assignments, but I hope that this is only later on:
-            // check this!
-            break; // Stop after reading all implicit assignments
-        }
+    IRFragment *entry = proc->getEntryFragment();
+    if (!entry) {
+        return true;
+    }
 
-        SharedExp e = static_cast<ImplicitAssign *>(s)->getLeft();
+    RTLList::iterator rit;
+    RTL::iterator sit;
+
+    // implicit assignments will be first, then other statements
+    for (SharedStmt s = entry->getFirstStmt(rit, sit); s && s->isImplicit();
+         s            = entry->getNextStmt(rit, sit)) {
+        SharedExp e = s->as<ImplicitAssign>()->getLeft();
 
         if (proc->getSignature()->findParam(e) == -1) {
             if (DEBUG_PARAMS) {
                 LOG_VERBOSE("Potential param %1", e);
             }
 
-            // I believe that the only true parameters will be registers or memofs that look like
-            // locals (stack pararameters)
+            // I believe that the only true parameters will be registers or memofs
+            // that look like locals (stack pararameters)
             if (!(e->isRegOf() || proc->isLocalOrParamPattern(e))) {
                 continue;
             }
@@ -95,7 +94,7 @@ bool FinalParameterSearchPass::execute(UserProc *proc)
                 LOG_VERBOSE("Found new parameter %1", e);
             }
 
-            SharedType ty = static_cast<ImplicitAssign *>(s)->getType();
+            SharedType ty = s->as<ImplicitAssign>()->getType();
             // Add this parameter to the signature (for now; creates parameter names)
             proc->addParameterToSignature(e, ty);
             // Insert it into the parameters StatementList, in sensible order

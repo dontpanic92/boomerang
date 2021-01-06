@@ -8,9 +8,9 @@
 
 
 list(APPEND boomerang-frontend-sources
-    frontend/DecodeResult
     frontend/DefaultFrontEnd
-    frontend/NJMCDecoder
+    frontend/LiftedInstruction
+    frontend/MachineInstruction
     frontend/SigEnum
     frontend/TargetQueue
 )

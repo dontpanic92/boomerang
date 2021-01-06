@@ -10,6 +10,7 @@
 #include "StatementPropagationPass.h"
 
 #include "boomerang/core/Project.h"
+#include "boomerang/core/Settings.h"
 #include "boomerang/db/Prog.h"
 #include "boomerang/db/proc/UserProc.h"
 #include "boomerang/passes/PassManager.h"
@@ -31,65 +32,38 @@ bool StatementPropagationPass::execute(UserProc *proc)
     StatementList stmts;
     proc->getStatements(stmts);
 
-    // Find the locations that are used by a live, dominating phi-function
-    LocationSet usedByDomPhi;
-    findLiveAtDomPhi(proc, usedByDomPhi);
-
-    // Next pass: count the number of times each assignment LHS would be propagated somewhere
+    // count the number of times each assignment LHS would be propagated somewhere
     std::map<SharedExp, int, lessExpStar> destCounts;
 
     // Also maintain a set of locations which are used by phi statements
-    for (Statement *s : stmts) {
+    for (SharedStmt s : stmts) {
         ExpDestCounter edc(destCounts);
         StmtDestCounter sdc(&edc);
         s->accept(&sdc);
     }
 
-    // A fourth pass to propagate only the flags (these must be propagated even if it results in
-    // extra locals)
+    // A fourth pass to propagate only the flags
+    // (these must be propagated even if it results in extra locals)
     bool change = false;
 
-    Settings *settings = proc->getProg()->getProject()->getSettings();
-    for (Statement *s : stmts) {
+    for (SharedStmt s : stmts) {
         if (!s->isPhi()) {
-            change |= s->propagateFlagsTo(settings);
+            change |= s->propagateFlagsToThis();
         }
     }
 
     // Finally the actual propagation
-    for (Statement *s : stmts) {
+    const int propMaxDepth = proc->getProg()->getProject()->getSettings()->propMaxDepth;
+    for (SharedStmt s : stmts) {
         if (!s->isPhi()) {
-            change |= s->propagateTo(settings, &destCounts, &usedByDomPhi);
+            change |= s->propagateToThis(propMaxDepth, &destCounts);
         }
     }
 
+    PassManager::get()->executePass(PassID::FragSimplify, proc);
     propagateToCollector(&proc->getUseCollector());
 
     return change;
-}
-
-
-void StatementPropagationPass::findLiveAtDomPhi(UserProc *proc, LocationSet &usedByDomPhi)
-{
-    LocationSet usedByDomPhi0;
-    std::map<SharedExp, PhiAssign *, lessExpStar> defdByPhi;
-
-    proc->getDataFlow()->findLiveAtDomPhi(usedByDomPhi, usedByDomPhi0, defdByPhi);
-
-    // Note that the above is not the complete algorithm; it has found the dead phi-functions
-    // in the defdAtPhi
-    for (auto &def : defdByPhi) {
-        // For each phi parameter, remove from the final usedByDomPhi set
-        for (RefExp &v : *def.second) {
-            assert(v.getSubExp1());
-            auto wrappedParam = RefExp::get(v.getSubExp1(), v.getDef());
-            usedByDomPhi.remove(wrappedParam);
-        }
-
-        // Now remove the actual phi-function (a PhiAssign Statement)
-        // Ick - some problem with return statements not using their returns until more analysis is
-        // done removeStatement(it->second);
-    }
 }
 
 
@@ -116,7 +90,7 @@ void StatementPropagationPass::propagateToCollector(UseCollector *collector)
                 continue;
             }
 
-            Assign *as = static_cast<Assign *>(r->getDef());
+            std::shared_ptr<Assign> as = r->getDef()->as<Assign>();
 
             bool ch;
             auto res = addr->clone()->searchReplaceAll(*r, as->getRight(), ch);
@@ -128,10 +102,8 @@ void StatementPropagationPass::propagateToCollector(UseCollector *collector)
             auto memOfRes = Location::memOf(res)->simplify();
 
             // First check to see if memOfRes is already in the set
-            if (collector->exists(memOfRes)) {
-                // Take care not to use an iterator to the newly erased element.
-                /* it = */
-                collector->remove(it++); // Already exists; just remove the old one
+            if (collector->hasUse(memOfRes)) {
+                it = collector->removeUse(it); // Already exists; just remove the old one
                 continue;
             }
             else {

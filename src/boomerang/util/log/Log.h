@@ -147,27 +147,21 @@ private:
 
     QString collectArg(const QString &msg, const char *arg) { return msg.arg(arg); }
     QString collectArg(const QString &msg, const QString &arg) { return msg.arg(arg); }
-    QString collectArg(const QString &msg, const Statement *s);
     QString collectArg(const QString &msg, const SharedConstExp &e);
     QString collectArg(const QString &msg, const SharedType &ty);
     QString collectArg(const QString &msg, const Type &ty);
     QString collectArg(const QString &msg, const RTL *r);
     QString collectArg(const QString &msg, const LocationSet *l);
-
-    QString collectArg(const QString &msg, char arg) { return msg.arg(arg); }
-    QString collectArg(const QString &msg, sint16 arg) { return msg.arg(arg); }
-    QString collectArg(const QString &msg, sint32 arg) { return msg.arg(arg); }
-    QString collectArg(const QString &msg, sint64 arg) { return msg.arg(arg); }
-
-    QString collectArg(const QString &msg, uint8 arg) { return msg.arg(arg); }
-    QString collectArg(const QString &msg, uint16 arg) { return msg.arg(arg); }
-    QString collectArg(const QString &msg, uint32 arg) { return msg.arg(arg); }
-    QString collectArg(const QString &msg, uint64 arg) { return msg.arg(arg); }
-
-    QString collectArg(const QString &msg, float arg) { return msg.arg(arg); }
-    QString collectArg(const QString &msg, double arg) { return msg.arg(arg); }
-
     QString collectArg(const QString &msg, Address addr);
+
+    // Integral or floating point PODs
+    template<typename Arg,
+             typename std::enable_if<
+                 std::is_integral<Arg>::value || std::is_floating_point<Arg>::value, int>::type = 0>
+    QString collectArg(const QString &msg, Arg arg)
+    {
+        return msg.arg(arg);
+    }
 
     template<typename Arg>
     QString collectArgs(const QString &msg, Arg arg)
@@ -196,6 +190,10 @@ private:
     LogLevel m_level = LogLevel::Default;
     std::vector<std::unique_ptr<ILogSink>> m_sinks;
 };
+
+template<>
+BOOMERANG_API QString Log::collectArg<Statement>(const QString &msg,
+                                                 const std::shared_ptr<Statement> &s);
 
 
 /// Usage: LOG_ERROR("%1, we have a problem", "Houston");
